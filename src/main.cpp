@@ -34,19 +34,14 @@ unsigned long t = 0;
 int current_step = -1;
 unsigned int total_steps = 20;
 unsigned long step_time_ms = 2000;
+unsigned long step_accel_time_ms = 1000;
 unsigned long step_start_ts = 0;
-
-// Add these variables for deceleration
-bool decelerating = false;
-unsigned long decel_start_ts = 0;
-unsigned long decel_duration_ms = 2000; // 2 second deceleration
-float decel_start_throttle = 0;
+unsigned long decel_time_ms = 3000; // Time to decelerate to stop
 
 MotorESC motor;
 
 void start_test();
 void run_test();
-void handle_deceleration(); // New function to handle deceleration
 
 /***********************************************************\
  * Initialization Code
@@ -84,6 +79,8 @@ void setup() {
 }
 
 void loop() {
+  // Run the motor control loop to handle acceleration/deceleration
+  motor.run();
 
   boolean new_data = run_sensors();
  
@@ -91,15 +88,23 @@ void loop() {
     if (millis() > t + 100) {
       Serial.print(current_step);
       Serial.print(" | Throttle: ");
-      Serial.print(motor.getCurrentThrottle() ,1);
-      Serial.print("% | Thrust: ");
+      Serial.print(motor.getCurrentThrottle(), 1);
+      Serial.print("% | State: ");
+      
+      // Print motor state
+      switch (motor.getState()) {
+        case MotorESC::STATE_IDLE: Serial.print("IDLE"); break;
+        case MotorESC::STATE_RUNNING: Serial.print("RUNNING"); break;
+        case MotorESC::STATE_ACCELERATING: Serial.print("ACCEL"); break;
+        case MotorESC::STATE_DECELERATING: Serial.print("DECEL"); break;
+      }
+      
+      Serial.print(" | Thrust: ");
       Serial.print(lc_value_1);
       Serial.print(" | Torque: ");
       Serial.print(lc_value_2);
       Serial.print(" | Voltage: ");
       Serial.print(bus_voltage);
-      //Serial.print(" | Shunt: ");
-      //Serial.print(shunt_voltage);
       Serial.print(" | Current: ");
       Serial.print(current);
       Serial.print(" | Power: ");
@@ -113,14 +118,10 @@ void loop() {
     }
   }
 
-  // Run test or handle deceleration, if active
-  if (decelerating) {
-    handle_deceleration();
-  } else {
-    run_test();
-  }
+  // Test logic is now simpler with all acceleration/deceleration moved to the motor class
+  run_test();
 
-  // receive command from serial terminal, send 't' to initiate tare operation:
+  // receive command from serial terminal
   if (Serial.available() > 0) {
     char inByte = Serial.read();
     if (inByte == 't') { tare_sensors(); }
@@ -131,61 +132,43 @@ void loop() {
 
 void start_test() {
   current_step = 0;
-  step_start_ts = millis();
-  decelerating = false; // Make sure deceleration is off
+  step_start_ts = millis() + step_accel_time_ms + 100; // Set end time for next step
+  
+  // Begin first step with smooth acceleration
+  // float throttle = (float)current_step / total_steps * 100.0f;
+  // motor.setThrottle(throttle, true, 1000); // Smoothly accelerate to first step
+  
+  DEBUG_printf(FST("\n# Test started.\n"));
 }
 
 void run_test() {
   if (current_step < 0) return; // No test started
+  
+  // Don't proceed to the next step if we're still accelerating/decelerating
+  if (motor.getState() == MotorESC::STATE_ACCELERATING || 
+      motor.getState() == MotorESC::STATE_DECELERATING) {
+    return;
+  }
 
   unsigned long now = millis();
-  if (now - step_start_ts >= step_time_ms) {
+  if (now >= step_start_ts + step_time_ms) {
+    DEBUG_println(FST(""));
     current_step++;
+    
     if (current_step > total_steps) {
-      DEBUG_println(FST("\n# Test completed. Starting deceleration..."));
+      DEBUG_println(FST("\n# Test completed."));
       
-      // Start deceleration instead of immediate stop
-      decelerating = true;
-      decel_start_ts = now;
-      decel_start_throttle = motor.getCurrentThrottle();
+      // Start smooth deceleration to stop
+      motor.stop(true, decel_time_ms);
+      current_step = -1; // Reset test
       
       return;
     }
-    step_start_ts = now;
-    float throttle = (float)current_step / total_steps * 100.0f; // Calculate throttle percentage
-    motor.setThrottle(throttle); // Set motor throttle
-    DEBUG_printf(FST("\n# Step %d/%d: Throttle set to %.2f%%\n"), current_step, total_steps, throttle);
-  }
-}
-
-void handle_deceleration() {
-  unsigned long now = millis();
-  unsigned long elapsed = now - decel_start_ts;
-  
-  if (elapsed >= decel_duration_ms) {
-    // Deceleration complete
-    motor.stop();
-    decelerating = false;
-    current_step = -1; // Reset test
-    DEBUG_println(FST("\n# Deceleration complete, motor stopped."));
-    return;
-  }
-  
-  // Calculate smooth deceleration using either linear or exponential approach
-  
-  // Linear deceleration (smoother at high speeds, abrupt at the end)
-  float progress = (float)elapsed / decel_duration_ms;
-  float throttle = decel_start_throttle * (1.0 - progress);
-  
-  // Alternative: Exponential deceleration (more natural feeling, gentler at the end)
-  // float throttle = decel_start_throttle * exp(-5.0 * progress);
-  
-  motor.setThrottle(throttle);
-  
-  // Only print debug info every 250ms to avoid flooding the serial console
-  static unsigned long last_decel_print = 0;
-  if (now - last_decel_print > 250) {
-    DEBUG_printf(FST("# Decelerating: %.2f%% throttle\n"), throttle);
-    last_decel_print = now;
+    
+   step_start_ts = millis() + step_accel_time_ms + 100; // Set start time for next step
+   float throttle = (float)current_step / total_steps * 100.0f; // Calculate throttle percentage
+    
+    // Start smooth acceleration to new throttle
+    motor.setThrottle(throttle, true, step_accel_time_ms);
   }
 }

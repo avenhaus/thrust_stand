@@ -10,6 +10,14 @@
  */
 class MotorESC {
 public:
+    // Motor states
+    enum MotorState {
+        STATE_IDLE,
+        STATE_RUNNING,
+        STATE_ACCELERATING,
+        STATE_DECELERATING
+    };
+
     /**
      * @brief Initialize the motor ESC
      * 
@@ -29,6 +37,16 @@ public:
                      uint8_t channel = 1);
     
     /**
+     * @brief Run the motor control loop
+     * 
+     * This function should be called regularly (in the main loop)
+     * to handle acceleration and deceleration smoothly.
+     * 
+     * @return Current motor state
+     */
+    static MotorState run();
+    
+    /**
      * @brief Arm the ESC
      * 
      * Sends the minimum pulse width for a specified duration to arm the ESC.
@@ -42,8 +60,10 @@ public:
      * @brief Set the throttle level
      * 
      * @param throttlePercent Throttle percentage (0.0 to 100.0)
+     * @param smooth Whether to accelerate smoothly to the target throttle
+     * @param accelTimeMs Time in milliseconds to accelerate to the target throttle
      */
-    static void setThrottle(float throttlePercent);
+    static void setThrottle(float throttlePercent, bool smooth = false, unsigned long accelTimeMs = 1000);
     
     /**
      * @brief Set the raw pulse width
@@ -54,8 +74,11 @@ public:
     
     /**
      * @brief Stop the motor (set throttle to 0)
+     * 
+     * @param smooth Whether to decelerate smoothly to stop
+     * @param decelTimeMs Time in milliseconds to decelerate to stop
      */
-    static void stop();
+    static void stop(bool smooth = false, unsigned long decelTimeMs = 2000);
     
     /**
      * @brief Get current throttle level
@@ -63,6 +86,13 @@ public:
      * @return Current throttle percentage (0.0 to 100.0)
      */
     static float getCurrentThrottle();
+    
+    /**
+     * @brief Get current motor state
+     * 
+     * @return Current motor state
+     */
+    static MotorState getState();
     
     /**
      * @brief Calibrate the ESC
@@ -85,6 +115,13 @@ private:
     static uint8_t _resolution;
     static uint32_t _maxDuty;
     static float _currentThrottle;
+    
+    // State management variables
+    static MotorState _state;
+    static unsigned long _stateStartTime;
+    static float _targetThrottle;
+    static float _startThrottle;
+    static unsigned long _transitionDuration;
 };
 
 // Useful presets for common ESC protocols
