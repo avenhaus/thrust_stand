@@ -11,6 +11,7 @@
 #include <SPI.h>
 #include <EEPROM.h>
 #include "sensors.h"
+#include "motor.h"
 
 
 PROGMEM const char EMPTY_STRING[] =  "";
@@ -30,6 +31,22 @@ Print* debugStream = &LOGGER;
 
 unsigned long t = 0;
 
+int current_step = -1;
+unsigned int total_steps = 20;
+unsigned long step_time_ms = 2000;
+unsigned long step_start_ts = 0;
+
+// Add these variables for deceleration
+bool decelerating = false;
+unsigned long decel_start_ts = 0;
+unsigned long decel_duration_ms = 2000; // 2 second deceleration
+float decel_start_throttle = 0;
+
+MotorESC motor;
+
+void start_test();
+void run_test();
+void handle_deceleration(); // New function to handle deceleration
 
 /***********************************************************\
  * Initialization Code
@@ -55,6 +72,11 @@ void setup() {
   delay(100);
   DEBUG_printf(FST("\n\n# %s %s | %s | %s\n"), PROJECT_NAME, PROJECT_VERSION, COMPILE_DATE, COMPILE_TIME);
 
+  DEBUG_println(FST("# Motor ESC ..."));
+  motor.begin(MOTOR_ESC_PIN, 1000, 2000, 50, 16, 1);
+  motor.arm(); // Arm the ESC with a 2 second min throttle
+  DEBUG_println(FST("# Motor ESC initialized."));
+
   if (!init_sensors(true)) {
     DEBUG_println(FST("# Sensors initialization failed!"));
     while (1) { delay(1000); } // Halt the program if sensors initialization fails
@@ -67,18 +89,22 @@ void loop() {
  
   if ((new_data)) {
     if (millis() > t + 100) {
+      Serial.print(current_step);
+      Serial.print(" | Throttle: ");
+      Serial.print(motor.getCurrentThrottle() ,1);
+      Serial.print("% | Thrust: ");
       Serial.print(lc_value_1);
-      Serial.print(" | ");
+      Serial.print(" | Torque: ");
       Serial.print(lc_value_2);
-      Serial.print(" | ");
+      Serial.print(" | Voltage: ");
       Serial.print(bus_voltage);
-      Serial.print(" | ");
-      Serial.print(shunt_voltage);
-      Serial.print(" | ");
+      //Serial.print(" | Shunt: ");
+      //Serial.print(shunt_voltage);
+      Serial.print(" | Current: ");
       Serial.print(current);
-      Serial.print(" | ");
+      Serial.print(" | Power: ");
       Serial.print(power);
-      Serial.print(" | ");
+      Serial.print(" | Temp: ");
       Serial.print(thermocouple_temp);
       Serial.print(" | ");
       Serial.print(thermocouple_max_temp);
@@ -87,70 +113,79 @@ void loop() {
     }
   }
 
+  // Run test or handle deceleration, if active
+  if (decelerating) {
+    handle_deceleration();
+  } else {
+    run_test();
+  }
+
   // receive command from serial terminal, send 't' to initiate tare operation:
   if (Serial.available() > 0) {
     char inByte = Serial.read();
     if (inByte == 't') { tare_sensors(); }
+    if (inByte == 'c') { motor.calibrate(); }
+    if (inByte == 's') { start_test(); }
   }
-
 }
 
-#if 0
+void start_test() {
+  current_step = 0;
+  step_start_ts = millis();
+  decelerating = false; // Make sure deceleration is off
+}
 
+void run_test() {
+  if (current_step < 0) return; // No test started
 
-#if 0
-  EEPROM.begin(EEPROM_SIZE);
-  eeprom_data_t eeprom_data;
-  EEPROM.get(0, eeprom_data);
-  if (eeprom_data.magic == EEPROM_MAGIC) {
-    memcpy(home_angle, eeprom_data.home_angle, sizeof(home_angle));
-    DEBUG_print(FST("# Home angles loaded from EEPROM: "));
-    for (int i = 0; i < ENCODER_COUNT; i++) {
-      DEBUG_printf(FST("%0.2f"), home_angle[i]);
-      if (i < ENCODER_COUNT - 1) { DEBUG_print(FST(", ")); }
+  unsigned long now = millis();
+  if (now - step_start_ts >= step_time_ms) {
+    current_step++;
+    if (current_step > total_steps) {
+      DEBUG_println(FST("\n# Test completed. Starting deceleration..."));
+      
+      // Start deceleration instead of immediate stop
+      decelerating = true;
+      decel_start_ts = now;
+      decel_start_throttle = motor.getCurrentThrottle();
+      
+      return;
     }
-    DEBUG_println();
-#ifdef HAS_RGB_LED
-    neopixelWrite(RGB_BUILTIN, 0, 10, 0);
-#endif
-  } else {
-    DEBUG_println(FST("# No valid EEPROM data found"));
-#ifdef HAS_RGB_LED
-    neopixelWrite(RGB_BUILTIN, 10, 10, 0);
-#endif
+    step_start_ts = now;
+    float throttle = (float)current_step / total_steps * 100.0f; // Calculate throttle percentage
+    motor.setThrottle(throttle); // Set motor throttle
+    DEBUG_printf(FST("\n# Step %d/%d: Throttle set to %.2f%%\n"), current_step, total_steps, throttle);
   }
-  EEPROM.end();
-#endif
-
-
-
-/***********************************************************\
- * Main Loop
-\***********************************************************/
-
-void loop() {
-  static bool last_button = HIGH;
-  u32_t start = millis();
-
-  // Wait for the next loop.
-  delay(LOOP_DELAY - (millis() % LOOP_DELAY));
 }
 
-#if 0
-bool save() {
-      for (int i = 0; i < ENCODER_COUNT; i++) {
-      home_angle[i] = data[i].angle;
-    }
-    change = true;
-    // Save calibration angles to EEPROM.
-    EEPROM.begin(EEPROM_SIZE);
-    eeprom_data_t eeprom_data;
-    eeprom_data.magic = EEPROM_MAGIC;
-    memcpy(eeprom_data.home_angle, home_angle, sizeof(home_angle));
-    EEPROM.put(0, eeprom_data);
-    EEPROM.end();
-    DEBUG_println(FST("# Saved Home Position to EEPROM"));
-
+void handle_deceleration() {
+  unsigned long now = millis();
+  unsigned long elapsed = now - decel_start_ts;
+  
+  if (elapsed >= decel_duration_ms) {
+    // Deceleration complete
+    motor.stop();
+    decelerating = false;
+    current_step = -1; // Reset test
+    DEBUG_println(FST("\n# Deceleration complete, motor stopped."));
+    return;
+  }
+  
+  // Calculate smooth deceleration using either linear or exponential approach
+  
+  // Linear deceleration (smoother at high speeds, abrupt at the end)
+  float progress = (float)elapsed / decel_duration_ms;
+  float throttle = decel_start_throttle * (1.0 - progress);
+  
+  // Alternative: Exponential deceleration (more natural feeling, gentler at the end)
+  // float throttle = decel_start_throttle * exp(-5.0 * progress);
+  
+  motor.setThrottle(throttle);
+  
+  // Only print debug info every 250ms to avoid flooding the serial console
+  static unsigned long last_decel_print = 0;
+  if (now - last_decel_print > 250) {
+    DEBUG_printf(FST("# Decelerating: %.2f%% throttle\n"), throttle);
+    last_decel_print = now;
+  }
 }
-#endif
-#endif

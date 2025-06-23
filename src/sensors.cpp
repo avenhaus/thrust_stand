@@ -72,8 +72,7 @@ bool init_sensors(boolean tare) {
   }
   INA.setMaxCurrentShunt(INA266_max_current, shunt);
   INA.configure(shunt, current_LSB_mA, current_zero_offset_mA, bus_V_scaling_e4);
-
-  calibrate_ina226();
+  //calibrate_ina226();
   DEBUG_println(FST("# INA226 Current Sensor initialized."));
 
   DEBUG_println(FST("# Initialize MAX31855 Thermocouple ..."));
