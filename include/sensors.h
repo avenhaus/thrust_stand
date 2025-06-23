@@ -4,6 +4,7 @@ bool init_sensors(boolean tare);
 bool run_sensors();
 void tare_sensors();
 void calibrate_ina226();
+void reset_stats();
 
 extern float lc_calibration_value_1;
 extern float lc_value_1; // load cell 1 value
@@ -17,5 +18,4 @@ extern float current;           //  Ampere
 extern float power;             //  Watt
 
 extern float thermocouple_temp;
-extern float thermocouple_max_temp; // maximum temperature recorded by the thermocouple
 

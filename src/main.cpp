@@ -111,8 +111,6 @@ void loop() {
       Serial.print(power);
       Serial.print(" | Temp: ");
       Serial.print(thermocouple_temp);
-      Serial.print(" | ");
-      Serial.print(thermocouple_max_temp);
       Serial.print("   \r");
       t = millis();
     }
@@ -131,6 +129,7 @@ void loop() {
 }
 
 void start_test() {
+  reset_stats(); // Reset statistics before starting the test
   current_step = 0;
   step_start_ts = millis() + step_accel_time_ms + 100; // Set end time for next step
   
@@ -170,5 +169,7 @@ void run_test() {
     
     // Start smooth acceleration to new throttle
     motor.setThrottle(throttle, true, step_accel_time_ms);
+
+    reset_stats(); // Reset statistics for the new step
   }
 }

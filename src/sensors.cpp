@@ -28,11 +28,20 @@ float shunt_voltage = 0.0;     //  Volt
 float current = 0.0;           //  Ampere
 float power = 0.0;             //  Watt
 
-
 Adafruit_MAX31855 thermocouple(MAX31855_CS_PIN);
 float thermocouple_temp = 0.0; // Thermocouple temperature value
-float thermocouple_max_temp = 0.0; // Thermocouple maximum temperature value
 
+
+unsigned int lc_value_count = 0; // Counter for number of values read from sensors
+float thrust_sum = 0.0; // Sum of thrust readings
+float torque_sum = 0.0; // Sum of torque readings
+
+unsigned int sensor_value_count = 0; // Counter for number of values read from sensors
+float bus_voltage_sum = 0.0; // Sum of bus voltage readings
+float shunt_voltage_sum = 0.0; // Sum of shunt voltage readings
+float current_sum = 0.0; // Sum of current readings
+float power_sum = 0.0; // Sum of power readings
+float thermocouple_max_temp = 0.0; // Thermocouple maximum temperature value
 
 bool init_sensors(boolean tare) {
   // Initialize the thermocouple.
@@ -86,7 +95,7 @@ bool init_sensors(boolean tare) {
   DEBUG_println(FST("# Sensors initialized."));
   return true;
 }
-
+    
 bool run_sensors() { 
   static boolean newDataReady = 0;
 
@@ -98,6 +107,10 @@ bool run_sensors() {
   if ((newDataReady)) {
       lc_value_1 = LoadCell_1.getData();
       lc_value_2 = LoadCell_2.getData();
+
+    lc_value_count++; // Increment the counter for number of values read from sensors
+    thrust_sum += lc_value_1; // Add the current thrust value to the sum
+    torque_sum += lc_value_2; // Add the current torque value to the sum
   }
     
   if (LoadCell_1.getTareStatus() == true) { DEBUG_println(FST("# Tare load cell 1 complete")) };
@@ -108,6 +121,12 @@ bool run_sensors() {
   current = INA.getCurrent_mA();
   power = INA.getPower_mW();
 
+    sensor_value_count++; // Increment the counter for number of values read from sensors
+    bus_voltage_sum += bus_voltage; // Add the current bus voltage value to the sum
+    shunt_voltage_sum += shunt_voltage; // Add the current shunt voltage value to the sum
+    current_sum += current; // Add the current value to the sum
+    power_sum += power; // Add the current power value to the sum
+
   thermocouple_temp = thermocouple.readCelsius();
   if (isnan(thermocouple_temp)) {
     DEBUG_println(FST("# Thermocouple fault(s) detected!"));
@@ -116,6 +135,7 @@ bool run_sensors() {
     if (e & MAX31855_FAULT_SHORT_GND) DEBUG_println(FST("#   FAULT: Thermocouple is short-circuited to GND."));
     if (e & MAX31855_FAULT_SHORT_VCC) DEBUG_println(FST("#   FAULT: Thermocouple is short-circuited to VCC."));
   }
+
   if (thermocouple_temp > thermocouple_max_temp) {
     thermocouple_max_temp = thermocouple_temp; // update maximum temperature
   } 
@@ -181,4 +201,17 @@ void tare_sensors() {
   LoadCell_1.tareNoDelay();
   LoadCell_2.tareNoDelay();
   DEBUG_println(FST("# Sensors tared."));
+}
+
+void reset_stats() {
+    lc_value_count = 0; // Counter for number of values read from sensors
+    thrust_sum = 0.0; // Sum of thrust readings
+    torque_sum = 0.0; // Sum of torque readings
+
+    sensor_value_count = 0; // Counter for number of values read from sensors
+    bus_voltage_sum = 0.0; // Sum of bus voltage readings
+    shunt_voltage_sum = 0.0; // Sum of shunt voltage readings
+    current_sum = 0.0; // Sum of current readings
+    power_sum = 0.0; // Sum of power readings
+    thermocouple_max_temp = 0.0; // Thermocouple maximum temperature value
 }
