@@ -46,6 +46,7 @@ float thermocouple_temp_sum = 0.0; // Thermocouple maximum temperature value
 float thermocouple_max_temp = 0.0; // Thermocouple maximum temperature value
 
 RpmSensor rpm_sensor; // RPM sensor instance
+float rpm = 0.0; // Current RPM value
 
 bool init_sensors(boolean tare) {
   // Initialize the thermocouple.
@@ -129,7 +130,7 @@ bool run_sensors(bool update_stats) {
   current = INA.getCurrent_mA() / 1000.0; 
   power = INA.getPower_mW() / 1000.0;
 
-  rpm_sensor.update(); // Update RPM sensor
+  rpm = rpm_sensor.update(); // Update RPM sensor
 
   thermocouple_temp = thermocouple.readCelsius();
   if (isnan(thermocouple_temp)) {
@@ -270,7 +271,7 @@ void get_stats(test_data_t* data){
     data->temperature_max = thermocouple_max_temp;
     
     // Add RPM values from the global variables
-    data->rpm = rpm;
+    data->rpm = rpm_sensor.getRPM();
     
     // Note that we don't set throttle here as it should be set by the caller
     // who knows what the throttle setting is

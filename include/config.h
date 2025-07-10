@@ -86,6 +86,8 @@ GPIO_34 - GPIO_39 have no internal pullup / pulldown.
 
 #define MAX31855_CS_PIN 27
 
+#define RPM_SENSOR_PIN 13     // GPIO pin connected to the optical sensor (default: 13)
+
 #define MOTOR_ESC_PIN 26
 
 #define BUTTON_TARE_PIN 0
