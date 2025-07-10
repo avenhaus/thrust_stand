@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "config.h"
 #include "sensors.h"
+#include "rpm_sensor.h"
 #include <HX711_ADC.h>
 #include <INA226.h>
 #include "Adafruit_MAX31855.h"
@@ -8,19 +9,19 @@
 
 //HX711 constructor (dout pin, sck pin)
 HX711_ADC LoadCell_1(HX711_DOUT_1_PIN, HX711_SCK_1_PIN); //HX711 1
-float lc_calibration_value_1 = 696.0; // calibration value load cell 1
+float lc_calibration_value_1 = 1941.5; // calibration value load cell 1
 float lc_value_1 = 0.0; // load cell 1 value
 
 HX711_ADC LoadCell_2(HX711_DOUT_2_PIN, HX711_SCK_2_PIN); //HX711 2
-float lc_calibration_value_2 = 733.0; // calibration value load cell 2
+float lc_calibration_value_2 = 1904; // calibration value load cell 2
 float lc_value_2 = 0.0; // load cell 2 value
 
 INA226 INA(0x40);
-
-float shunt = 0.100;                      /* shunt (Shunt Resistance in Ohms). Lower shunt gives higher accuracy but lower current measurement range. Recommended value 0.020 Ohm. Min 0.001 Ohm */
-float INA266_max_current = 0.081 * shunt; /* INA226 max current depends on shunt restistor: 0.081 * shunt  */
-float current_LSB_mA = 0.05;              /* current_LSB_mA (Current Least Significant Bit in milli Amperes). Recommended values: 0.050, 0.100, 0.250, 0.500, 1, 2, 2.5 (in milli Ampere units) */
-float current_zero_offset_mA = -0.785;    /* current_zero_offset_mA (Current Zero Offset in milli Amperes, default = 0) */
+float cal =  (481.15 / 290.0);
+float shunt = 0.002*(481.15 / 290.0);                      /* shunt (Shunt Resistance in Ohms). Lower shunt gives higher accuracy but lower current measurement range. Recommended value 0.020 Ohm. Min 0.001 Ohm */
+float INA266_max_current = 0.081 / shunt; /* INA226 max current depends on shunt restistor: 0.081 * shunt  */
+float current_LSB_mA = 0.5;              /* current_LSB_mA (Current Least Significant Bit in milli Amperes). Recommended values: 0.050, 0.100, 0.250, 0.500, 1, 2, 2.5 (in milli Ampere units) */
+float current_zero_offset_mA = -23.850;// -39.650*cal;    /* current_zero_offset_mA (Current Zero Offset in milli Amperes, default = 0) | Needs to be updated along with shunt!! */
 uint16_t bus_V_scaling_e4 = 10000;    
 
 float bus_voltage = 0.0;       //  Volt
@@ -41,7 +42,10 @@ float bus_voltage_sum = 0.0; // Sum of bus voltage readings
 float shunt_voltage_sum = 0.0; // Sum of shunt voltage readings
 float current_sum = 0.0; // Sum of current readings
 float power_sum = 0.0; // Sum of power readings
+float thermocouple_temp_sum = 0.0; // Thermocouple maximum temperature value
 float thermocouple_max_temp = 0.0; // Thermocouple maximum temperature value
+
+RpmSensor rpm_sensor; // RPM sensor instance
 
 bool init_sensors(boolean tare) {
   // Initialize the thermocouple.
@@ -81,7 +85,7 @@ bool init_sensors(boolean tare) {
   }
   INA.setMaxCurrentShunt(INA266_max_current, shunt);
   INA.configure(shunt, current_LSB_mA, current_zero_offset_mA, bus_V_scaling_e4);
-  //calibrate_ina226();
+  calibrate_ina226();
   DEBUG_println(FST("# INA226 Current Sensor initialized."));
 
   DEBUG_println(FST("# Initialize MAX31855 Thermocouple ..."));
@@ -91,12 +95,14 @@ bool init_sensors(boolean tare) {
   }
   DEBUG_println(FST("# Thermocouple MAX31855 initialized."));
 
+  DEBUG_println(FST("# Initialize RPM Sensor ..."));
+  rpm_sensor.begin(RPM_SENSOR_PIN);
 
   DEBUG_println(FST("# Sensors initialized."));
   return true;
 }
     
-bool run_sensors() { 
+bool run_sensors(bool update_stats) { 
   static boolean newDataReady = 0;
 
   // check for new data/start next conversion:
@@ -108,9 +114,11 @@ bool run_sensors() {
       lc_value_1 = LoadCell_1.getData();
       lc_value_2 = LoadCell_2.getData();
 
-    lc_value_count++; // Increment the counter for number of values read from sensors
-    thrust_sum += lc_value_1; // Add the current thrust value to the sum
-    torque_sum += lc_value_2; // Add the current torque value to the sum
+    if (update_stats) {
+      lc_value_count++; // Increment the counter for number of values read from sensors
+      thrust_sum += lc_value_1; // Add the current thrust value to the sum
+      torque_sum += lc_value_2; // Add the current torque value to the sum
+    }
   }
     
   if (LoadCell_1.getTareStatus() == true) { DEBUG_println(FST("# Tare load cell 1 complete")) };
@@ -118,14 +126,10 @@ bool run_sensors() {
 
   bus_voltage = INA.getBusVoltage();
   shunt_voltage = INA.getShuntVoltage_mV();
-  current = INA.getCurrent_mA();
-  power = INA.getPower_mW();
+  current = INA.getCurrent_mA() / 1000.0; 
+  power = INA.getPower_mW() / 1000.0;
 
-    sensor_value_count++; // Increment the counter for number of values read from sensors
-    bus_voltage_sum += bus_voltage; // Add the current bus voltage value to the sum
-    shunt_voltage_sum += shunt_voltage; // Add the current shunt voltage value to the sum
-    current_sum += current; // Add the current value to the sum
-    power_sum += power; // Add the current power value to the sum
+  rpm_sensor.update(); // Update RPM sensor
 
   thermocouple_temp = thermocouple.readCelsius();
   if (isnan(thermocouple_temp)) {
@@ -136,9 +140,20 @@ bool run_sensors() {
     if (e & MAX31855_FAULT_SHORT_VCC) DEBUG_println(FST("#   FAULT: Thermocouple is short-circuited to VCC."));
   }
 
-  if (thermocouple_temp > thermocouple_max_temp) {
-    thermocouple_max_temp = thermocouple_temp; // update maximum temperature
-  } 
+
+  if (update_stats) {
+    sensor_value_count++; // Increment the counter for number of values read from sensors
+    bus_voltage_sum += bus_voltage; // Add the current bus voltage value to the sum
+    shunt_voltage_sum += shunt_voltage; // Add the current shunt voltage value to the sum
+    current_sum += current; // Add the current value to the sum
+    power_sum += power; // Add the current power value to the sum
+
+    thermocouple_temp_sum += thermocouple_temp; // Add the current thermocouple temperature value to the sum
+    if (thermocouple_temp > thermocouple_max_temp) {
+        thermocouple_max_temp = thermocouple_temp; // update maximum temperature
+    } 
+  }
+
 
   return newDataReady; // return true if new data is ready
 }
@@ -149,7 +164,7 @@ void calibrate_ina226() {
   float bv = 0, cu = 0;
   for (int i = 0; i < 10; i++) {
     bv += INA.getBusVoltage();
-    cu += INA.getCurrent_mA();
+    cu += INA.getCurrent_mA() / 1000.0;
     delay(150);
   }
   bv /= 10;
@@ -166,7 +181,7 @@ void calibrate_ina226() {
   Serial.println("V");
   cu = 0;
   for (int i = 0; i < 10; i++) {
-    cu += INA.getCurrent_mA();
+    cu += INA.getCurrent_mA() / 1000.0;
     delay(100);
   }
   cu /= 10;
@@ -188,7 +203,7 @@ void calibrate_ina226() {
   Serial.println(" * (DMM Measured Bus Voltage)");
   Serial.println("Step 8. Set DMM in current measurement mode. Use a resistor that will generate around 50-100mA IOUT measurement between IN- and GND pins with DMM in series with load. Note current measured on DMM.");
   Serial.print("\tshunt = ");
-  Serial.print(shunt);
+  Serial.print(shunt,4);
   Serial.print(" * ");
   Serial.print(cu, 3);
   Serial.println(" / (DMM Measured IOUT)");
@@ -213,5 +228,51 @@ void reset_stats() {
     shunt_voltage_sum = 0.0; // Sum of shunt voltage readings
     current_sum = 0.0; // Sum of current readings
     power_sum = 0.0; // Sum of power readings
+    thermocouple_temp_sum = 0.0; // Sum of thermocouple temperature readings
     thermocouple_max_temp = 0.0; // Thermocouple maximum temperature value
+}
+
+// Fill in the test_data_t structure with the current average sensor values
+void get_stats(test_data_t* data){
+    // Make sure we don't divide by zero
+    if (!data) {
+        DEBUG_println(FST("# ERROR: Null pointer passed to get_stats"));
+        return;
+    }
+    
+    // Store the sample counts
+    data->lc_samples = lc_value_count;
+    data->sensor_samples = sensor_value_count;
+    
+    // Calculate averages for load cell values (if any samples were collected)
+    if (lc_value_count > 0) {
+        data->thrust = thrust_sum / lc_value_count;
+        data->torque = torque_sum / lc_value_count;
+    } else {
+        data->thrust = lc_value_1; // Use current value if no samples
+        data->torque = lc_value_2;
+    }
+    
+    // Calculate averages for other sensor values (if any samples were collected)
+    if (sensor_value_count > 0) {
+        data->voltage = bus_voltage_sum / sensor_value_count;
+        data->current = current_sum / sensor_value_count;
+        data->power = power_sum / sensor_value_count;
+        data->temperature = thermocouple_temp_sum / sensor_value_count;
+    } else {
+        data->voltage = bus_voltage; // Use current values if no samples
+        data->current = current;
+        data->power = power;
+        data->temperature = thermocouple_temp;
+    }
+    
+    // Max temperature doesn't need averaging
+    data->temperature_max = thermocouple_max_temp;
+    
+    // Add RPM values from the global variables
+    data->rpm = rpm;
+    
+    // Note that we don't set throttle here as it should be set by the caller
+    // who knows what the throttle setting is
+   
 }
