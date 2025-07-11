@@ -1,10 +1,9 @@
 /*======================================================================*\
- * ESP32-S3 DC Servo Motor Controller
+ * ESP32 Thrust Stand
 \*======================================================================*/
-
-/*
- */
-
+// This code is part of the ESP32 Thrust Stand project.
+// It is designed to control a brushless motor ESC, read sensor data,
+// and perform tests to measure thrust, torque, power, RPM, temperature and other parameters.
 
 #include <Arduino.h>
 #include "config.h"
@@ -12,6 +11,7 @@
 #include <EEPROM.h>
 #include "sensors.h"
 #include "motor.h"
+#include "analog.h"
 
 
 PROGMEM const char EMPTY_STRING[] =  "";
@@ -39,16 +39,23 @@ unsigned long step_start_ts = 0;
 unsigned long decel_time_ms = 3000; // Time to decelerate to stop
 
 MotorESC motor;
+Potentiometer poti(POTI_PIN, 0, 4095, 0.1f); // Potentiometer for throttle control
+float poti_value = 0.0f; // Current potentiometer value
+bool analogThrottle = false; 
 
 test_data_t test_data[101] = {0};
 
 extern float rpm; // Current RPM value
 
+void check_serial();
+void setThrottle(float throttle);
+void tare_sensors();
 void start_test();
 void run_test();
 void abort_test(); // Add this line
 void print_stats(const test_data_t& data);
 void print_csv_results(); // Add this line
+void print_help(); // Add this function declaration
 
 /***********************************************************\
  * Initialization Code
@@ -83,6 +90,9 @@ void setup() {
     DEBUG_println(FST("# Sensors initialization failed!"));
     while (1) { delay(1000); } // Halt the program if sensors initialization fails
   }
+  
+  // Print keyboard command help
+  print_help();
 }
 
 void loop() {
@@ -128,22 +138,58 @@ void loop() {
   // Test logic is now simpler with all acceleration/deceleration moved to the motor class
   run_test();
 
-  // receive command from serial terminal
-  if (Serial.available() > 0) {
-    char inByte = Serial.read();
-    if (inByte == 't') { tare_sensors(); }
-    if (inByte == 'c') { motor.calibrate(); }
-    if (inByte == 's') { 
-      if (current_step < 0) {
-        // No test running, start a new one
-        start_test(); 
-      } else {
-        // Test is already running, abort it
-        abort_test();
-      }
-    }
-    if (inByte == 'p') { print_csv_results(); } // Print CSV data on demand
+  check_serial(); // Check for serial input commands
+  
+  poti_value = poti.read(); // Read potentiometer value
+  if (analogThrottle) {
+    // Use potentiometer value for throttle control
+    float throttle = map(poti_value, 0, 4095, 0, 100); // Map potentiometer value to 0-100%
+    motor.setThrottle(throttle); // Smooth acceleration based on throttle change  
   }
+}
+
+void setThrottle(float throttle) {
+  analogThrottle = false; // Disable analog throttle control
+  if (current_step >= 0) {abort_test(); return; }
+  motor.setThrottle(throttle, true, 3000 * abs((motor.getCurrentThrottle() - throttle)) / 100.0f); // Smooth acceleration based on throttle change
+}
+
+void check_serial() {
+// receive command from serial terminal
+  if (Serial.available() <= 0) { return; }
+
+  char inByte = Serial.read();
+  if (inByte == 't') { tare_sensors(); }
+  else if (inByte == 'c') { motor.calibrate(); }
+  else if (inByte == 's') { 
+    if (current_step < 0) {
+      // No test running, start a new one
+      start_test(); 
+    } else {
+      // Test is already running, abort it
+      abort_test();
+    }
+  }
+  else if (inByte == 'p') { print_csv_results(); } // Print CSV data on demand
+  else if (inByte == ' ') { // Stop the motor
+        if (current_step >= 0) { abort_test(); }
+        else {  setThrottle(0.0); }
+  }
+  else if (inByte == '1') { setThrottle(10.0); } 
+  else if (inByte == '2') { setThrottle(20.0); }
+  else if (inByte == '3') { setThrottle(30.0); }
+  else if (inByte == '4') { setThrottle(40.0); }
+  else if (inByte == '5') { setThrottle(50.0); }
+  else if (inByte == '6') { setThrottle(60.0); }
+  else if (inByte == '7') { setThrottle(70.0); }
+  else if (inByte == '8') { setThrottle(80.0); }
+  else if (inByte == '9') { setThrottle(90.0); }
+  else if (inByte == '0') { setThrottle(100.0); }
+  else if (inByte == 'a') {
+    if (current_step >= 0) { abort_test(); }
+    else {  analogThrottle = true; }
+  }
+  else if (inByte == 'h') { print_help(); } // Print help message
 }
 
 void start_test() {
@@ -171,7 +217,7 @@ void print_stats(const test_data_t& data) {
       efficiency = data.thrust / (data.power / 1000.0); // g/W
     }
   DEBUG_printf(FST("Power: %.2f | "), data.power);
-  DEBUG_printf(FST("RPM: %.0f | "), data.rpm);
+  DEBUG_printf(FST("RPM: %d | "), (uint32_t)data.rpm);
   DEBUG_printf(FST("Temperature: %.2f | Max: %.2f | "), data.temperature, data.temperature_max);
   DEBUG_printf(FST(" %u |"), data.lc_samples);
   DEBUG_printf(FST("%u\n"), data.sensor_samples);
@@ -282,4 +328,17 @@ void abort_test() {
   
   // Reset test state
   current_step = -1;
+}
+
+void print_help() {
+  Serial.println(F("\n*** Command List ***"));
+  Serial.println(F(" t - Tare sensors"));
+  Serial.println(F(" c - Calibrate motor ESC"));
+  Serial.println(F(" s - Start/Stop test"));
+  Serial.println(F(" p - Print CSV results"));
+  Serial.println(F(" 0-9 - Set throttle to 10%%-100%%"));
+  Serial.println(F(" a - Enable analog throttle control"));
+  Serial.println(F(" SPACE - Stop motor"));
+  Serial.println(F(" h - Print this help message"));
+  Serial.println(F("Press 's' to start the test, or 'h' to see this help message."));
 }

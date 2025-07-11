@@ -37,7 +37,7 @@ No.| GPIO | IO | RTC | ADC | Default   | Function
 6  |  34  | I  | R04 | 1_6 |           | HC711-DOUT1
 7  |  35  | I  | R05 | 1_7 |           | HC711-DOUT2
 4  |  36  | I  | R00 | 1_0 | SENSOR_VP | Potentiometer
-5  |  39  | I  | R03 | 1_3 | SENSOR_VN | Voltage Divider
+5  |  39  | I  | R03 | 1_3 | SENSOR_VN | 
 3  |  EN  | I  |     |     | RESET     | Reset LCD       
 ---+------+----+-----+-----+-----------+---------------------------
 (IO6 to IO11 are used by the internal FLASH and are not useable)
@@ -86,7 +86,9 @@ GPIO_34 - GPIO_39 have no internal pullup / pulldown.
 
 #define MAX31855_CS_PIN 27
 
-#define RPM_SENSOR_PIN 13     // GPIO pin connected to the optical sensor (default: 13)
+#define RPM_SENSOR_PIN 13     // GPIO pin connected to the optical sensor
+
+#define POTI_PIN 36 // GPIO pin connected to the potentiometer
 
 #define MOTOR_ESC_PIN 26
 
