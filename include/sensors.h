@@ -32,6 +32,6 @@ extern float shunt_voltage;     //  Volt
 extern float current;           //  Ampere
 extern float power;             //  Watt
 
-
 extern float thermocouple_temp;
-
+extern float mlx_ambient_temp; // MLX90614 ambient temperature
+extern float mlx_object_temp;  // MLX90614 object temperature

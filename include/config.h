@@ -26,8 +26,8 @@ No.| GPIO | IO | RTC | ADC | Default   | Function
 28 |  17+ | IO |     |     | UART2_TXD | 
 30 |  18  | IO |     |     | SPI0_SCK  | SCK MAX31855, LCD, Touch, D
 31 |  19  | IO |     |     | SPI0_MISO | MISO MAX31855, Touch, SD
-33 |  21  | IO |     |     | I2C0_SDA  | INA226_SDA 
-36 |  22  | IO |     |     | I2C0_SCL  | INA226_SCL
+33 |  21  | IO |     |     | I2C0_SDA  | INA226_SDA / MLX90614
+36 |  22  | IO |     |     | I2C0_SCL  | INA226_SCL / MLX90614
 37 |  23  | IO |     |     | SPI0_MOSI | MOSI LCD, SD
 10 |  25  | IO | R06 | 2_8 |DAC1/I2S-DT| BUTTON START / STOP
 11 |  26  | IO | R07 | 2_9 |DAC2/I2S-WS| Motor ESC PWM

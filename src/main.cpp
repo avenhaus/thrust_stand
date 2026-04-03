@@ -22,6 +22,13 @@ PROGMEM const char PROJECT_VERSION[] = __PROJECT_COMPILE__;
 PROGMEM const char COMPILE_DATE[] = __DATE__;
 PROGMEM const char COMPILE_TIME[] = __TIME__;
 
+//Fix poti filter
+//Fix Poti end  
+//Kalman filter
+//Max obj temp
+//add temps to stats
+//calibrate sensor
+
 
 Print* debugStream = &LOGGER;
 
@@ -88,7 +95,7 @@ void setup() {
 
   if (!init_sensors(true)) {
     DEBUG_println(FST("# Sensors initialization failed!"));
-    while (1) { delay(1000); } // Halt the program if sensors initialization fails
+    //while (1) { delay(1000); } // Halt the program if sensors initialization fails
   }
   
   // Print keyboard command help
@@ -130,6 +137,12 @@ void loop() {
       Serial.print(rpm);
       Serial.print(" | Temp: ");
       Serial.print(thermocouple_temp);
+      Serial.print(" | Amb: ");
+      Serial.print(mlx_ambient_temp);
+      Serial.print(" | Obj: ");
+      Serial.print(mlx_object_temp);
+      Serial.print(" | Pot: ");
+      Serial.print(poti_value);
       Serial.print("   \r");
       t = millis();
     }
@@ -143,8 +156,7 @@ void loop() {
   poti_value = poti.read(); // Read potentiometer value
   if (analogThrottle) {
     // Use potentiometer value for throttle control
-    float throttle = map(poti_value, 0, 4095, 0, 100); // Map potentiometer value to 0-100%
-    motor.setThrottle(throttle); // Smooth acceleration based on throttle change  
+    motor.setThrottle(poti_value * 100.0); 
   }
 }
 
@@ -187,7 +199,9 @@ void check_serial() {
   else if (inByte == '0') { setThrottle(100.0); }
   else if (inByte == 'a') {
     if (current_step >= 0) { abort_test(); }
-    else {  analogThrottle = true; }
+    else if (poti_value > 0.1f) {
+      DEBUG_printf(FST("\n\n# Knob is at %d%%. Turn to 0 to start analog throttle control.\n"), (int)poti_value);
+    } else {  analogThrottle = true; }
   }
   else if (inByte == 'h') { print_help(); } // Print help message
 }
@@ -226,7 +240,8 @@ void print_stats(const test_data_t& data) {
 void print_csv_results() {
   // Print CSV header
   Serial.println(F("\n\n*** TEST RESULTS CSV DATA ***\n"));
-  Serial.println(F("Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(mW),Temp(°C),MaxTemp(°C),RPM,Efficiency(g/W),Samples"));
+  Serial.println(F("Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),Temp(°C),MaxTemp(°C),RPM,Efficiency(g/W),Samples"));
+  Serial.println(F("Step,Throttle(%),Thrust(g),Voltage(V),Current(A),Power(W),RPM,Efficiency(g/W),Samples"));
   
   // Print data rows
   for (int i = 0; i <= total_steps; i++) {
@@ -250,18 +265,18 @@ void print_csv_results() {
     Serial.print(F(","));
     Serial.print(test_data[i].thrust, 2);
     Serial.print(F(","));
-    Serial.print(test_data[i].torque, 2);
-    Serial.print(F(","));
+    //Serial.print(test_data[i].torque, 2);
+    //Serial.print(F(","));
     Serial.print(test_data[i].voltage, 2);
     Serial.print(F(","));
     Serial.print(test_data[i].current, 3);
     Serial.print(F(","));
     Serial.print(test_data[i].power, 2);
     Serial.print(F(","));
-    Serial.print(test_data[i].temperature, 2);
-    Serial.print(F(","));
-    Serial.print(test_data[i].temperature_max, 2);
-    Serial.print(F(","));
+    //Serial.print(test_data[i].temperature, 2);
+    //Serial.print(F(","));
+    //Serial.print(test_data[i].temperature_max, 2);
+    //tSerial.print(F(","));
     Serial.print(test_data[i].rpm, 0);
     Serial.print(F(","));
     Serial.print(efficiency, 2);
@@ -290,6 +305,7 @@ void run_test() {
     print_stats(test_data[current_step]);
 
     current_step++;
+    if (current_step < 6) { current_step = 6; } // Ensure we start from step 6 if we are below it
     
     if (current_step > total_steps) {
       DEBUG_println(FST("\n# Test completed."));

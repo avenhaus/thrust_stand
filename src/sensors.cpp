@@ -5,6 +5,7 @@
 #include <HX711_ADC.h>
 #include <INA226.h>
 #include "Adafruit_MAX31855.h"
+#include <Adafruit_MLX90614.h>
 
 
 //HX711 constructor (dout pin, sck pin)
@@ -31,6 +32,11 @@ float power = 0.0;             //  Watt
 
 Adafruit_MAX31855 thermocouple(MAX31855_CS_PIN);
 float thermocouple_temp = 0.0; // Thermocouple temperature value
+
+Adafruit_MLX90614 mlx = Adafruit_MLX90614();
+bool found_mlx = false; // Flag to check if MLX90614 sensor is found
+float mlx_ambient_temp = 0.0; // MLX90614 ambient temperature
+float mlx_object_temp = 0.0; // MLX90614 object temperature
 
 
 unsigned int lc_value_count = 0; // Counter for number of values read from sensors
@@ -81,7 +87,7 @@ bool init_sensors(boolean tare) {
   Wire.begin();
   if (!INA.begin() )
   {
-    DEBUG_println(FST("# Could not connect to INA226 Current Sensor. Fix and Reboot"));
+    DEBUG_println(FST("# Could not connect to INA226 Current Sensor."));
     return false;
   }
   INA.setMaxCurrentShunt(INA266_max_current, shunt);
@@ -92,9 +98,13 @@ bool init_sensors(boolean tare) {
   DEBUG_println(FST("# Initialize MAX31855 Thermocouple ..."));
   if (!thermocouple.begin()) {
     DEBUG_println(FST("# Thermocouple MAX31855 initialization failed!"));
-    return true;
   }
   DEBUG_println(FST("# Thermocouple MAX31855 initialized."));
+
+  DEBUG_println(FST("# Initialize MLX90614 Contactless Temperature Sensor ..."));
+  if (!mlx.begin()) { 
+    DEBUG_println(FST("# Error connecting to MLX90614 contactless temperature sensor. Check wiring.")); 
+  } else { found_mlx = true; }
 
   DEBUG_println(FST("# Initialize RPM Sensor ..."));
   rpm_sensor.begin(RPM_SENSOR_PIN);
@@ -141,6 +151,10 @@ bool run_sensors(bool update_stats) {
     if (e & MAX31855_FAULT_SHORT_VCC) DEBUG_println(FST("#   FAULT: Thermocouple is short-circuited to VCC."));
   }
 
+  if (found_mlx) { // Only read MLX90614 if it was found
+    mlx_ambient_temp = mlx.readAmbientTempC();
+    mlx_object_temp = mlx.readObjectTempC();
+  }
 
   if (update_stats) {
     sensor_value_count++; // Increment the counter for number of values read from sensors
