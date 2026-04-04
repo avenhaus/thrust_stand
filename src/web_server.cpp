@@ -1,0 +1,561 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
+#include <Preferences.h>
+#include <LittleFS.h>
+#include "config.h"
+#include "web_server.h"
+#include "thermal.h"
+#include "sensors.h"
+#include "motor.h"
+
+// ---------------------------------------------------------------------------
+//  Forward declarations — command functions defined in main.cpp
+// ---------------------------------------------------------------------------
+extern int          current_step;
+extern unsigned int total_steps;
+extern test_data_t  test_data[];
+extern float        rpm;
+extern MotorESC     motor;
+
+bool cmd_start_test();
+bool cmd_abort_test();
+void cmd_stop_motor();
+void cmd_set_throttle(float pct);
+void cmd_tare();
+
+// ---------------------------------------------------------------------------
+//  Private state
+// ---------------------------------------------------------------------------
+static AsyncWebServer  _server(80);
+static AsyncWebSocket  _ws("/ws");
+static Preferences     _prefs;
+
+static NetMode       _wifiMode      = NET_MODE_DISCONNECTED;
+static String        _wifiSSID      = "";
+static String        _wifiIP        = "";
+static String        _wifiFailReason = "";
+
+static bool          _webThrottleActive = false;
+static float         _webThrottleValue  = 0.0f;
+static unsigned long _webThrottleLastHB = 0;
+
+static unsigned long _lastTelemetryMs = 0;
+static unsigned long _lastThermalMs   = 0;
+
+// ---------------------------------------------------------------------------
+//  Wi-Fi credential helpers
+// ---------------------------------------------------------------------------
+static String _loadSSID() {
+    _prefs.begin("thrust_stand", true);
+    String s = _prefs.getString("wifi_ssid", "");
+    _prefs.end();
+    return s;
+}
+
+static String _loadPass() {
+    _prefs.begin("thrust_stand", true);
+    String p = _prefs.getString("wifi_pass", "");
+    _prefs.end();
+    return p;
+}
+
+static void _saveCredentials(const String& ssid, const String& pass) {
+    _prefs.begin("thrust_stand", false);
+    _prefs.putString("wifi_ssid", ssid);
+    _prefs.putString("wifi_pass", pass);
+    _prefs.end();
+}
+
+void web_wifi_clear_credentials() {
+    _prefs.begin("thrust_stand", false);
+    _prefs.remove("wifi_ssid");
+    _prefs.remove("wifi_pass");
+    _prefs.end();
+    DEBUG_println(FST("# Wi-Fi credentials cleared from NVS."));
+}
+
+// ---------------------------------------------------------------------------
+//  AP fallback
+// ---------------------------------------------------------------------------
+static void _startAP() {
+    // Build SSID from prefix + chip ID suffix
+    uint32_t chipId = (uint32_t)(ESP.getEfuseMac() & 0xFFFF);
+    char apSSID[32];
+    snprintf(apSSID, sizeof(apSSID), "%s_%04X", WIFI_AP_PREFIX, chipId);
+
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(apSSID, WIFI_AP_DEFAULT_PASSWORD);
+    _wifiMode = NET_MODE_AP_FALLBACK;
+    _wifiSSID = apSSID;
+    _wifiIP   = WiFi.softAPIP().toString();
+
+    DEBUG_printf(FST("# Wi-Fi AP started: SSID=%s  IP=%s\n"), apSSID, _wifiIP.c_str());
+}
+
+// ---------------------------------------------------------------------------
+//  Station connect (blocking, bounded)
+// ---------------------------------------------------------------------------
+static bool _tryStationConnect(const String& ssid, const String& pass, unsigned long timeoutMs) {
+    _wifiMode = NET_MODE_CONNECTING;
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+
+    DEBUG_printf(FST("# Wi-Fi connecting to \"%s\" ...\n"), ssid.c_str());
+
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
+        delay(250);
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        _wifiMode = NET_MODE_STATION;
+        _wifiSSID = ssid;
+        _wifiIP   = WiFi.localIP().toString();
+        _wifiFailReason = "";
+        DEBUG_printf(FST("# Wi-Fi connected: SSID=%s  IP=%s\n"), ssid.c_str(), _wifiIP.c_str());
+        return true;
+    }
+
+    _wifiFailReason = "Station connect timeout";
+    WiFi.disconnect(true);
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+//  WebSocket events
+// ---------------------------------------------------------------------------
+static void _onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
+                        AwsEventType type, void* arg, uint8_t* data, size_t len) {
+    if (type == WS_EVT_CONNECT) {
+        DEBUG_printf(FST("# WS client #%u connected\n"), client->id());
+    } else if (type == WS_EVT_DISCONNECT) {
+        DEBUG_printf(FST("# WS client #%u disconnected\n"), client->id());
+        // If this was the throttle-controlling client, start timeout countdown
+        // (main loop handles the actual timeout via web_throttle_is_active + age check)
+    } else if (type == WS_EVT_DATA) {
+        AwsFrameInfo* info = (AwsFrameInfo*)arg;
+        if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+            // Parse incoming JSON message
+            JsonDocument doc;
+            DeserializationError err = deserializeJson(doc, data, len);
+            if (err) return;
+
+            const char* cmd = doc["cmd"];
+            if (!cmd) return;
+
+            if (strcmp(cmd, "heartbeat") == 0) {
+                _webThrottleLastHB = millis();
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  REST API handlers
+// ---------------------------------------------------------------------------
+
+static void _handleStatus(AsyncWebServerRequest* req) {
+    JsonDocument doc;
+
+    // Motor
+    doc["throttle"]    = motor.getCurrentThrottle();
+    const char* stateStr = "IDLE";
+    switch (motor.getState()) {
+        case MotorESC::STATE_RUNNING:       stateStr = "RUNNING";  break;
+        case MotorESC::STATE_ACCELERATING:  stateStr = "ACCEL";    break;
+        case MotorESC::STATE_DECELERATING:  stateStr = "DECEL";    break;
+        default: break;
+    }
+    doc["motorState"]  = stateStr;
+
+    // Test
+    doc["testRunning"]  = (current_step >= 0);
+    doc["currentStep"]  = current_step;
+    doc["totalSteps"]   = total_steps;
+
+    // Sensors
+    doc["thrust"]   = lc_value_1;
+    doc["torque"]   = lc_value_2;
+    doc["voltage"]  = bus_voltage;
+    doc["current"]  = current;
+    doc["power"]    = power;
+    doc["rpm"]      = rpm;
+
+    // Thermal
+    doc["thermalAvailable"] = thermal_is_available();
+    doc["thermalRoiMax"]    = thermal_get_roi_max();
+    doc["thermalFrameMax"]  = thermal_get_frame_max();
+    doc["thermalFrameAge"]  = thermal_get_frame_age_ms();
+    doc["thermalRoiDefault"]= thermal_roi_is_default();
+
+    // Heap
+    doc["freeHeap"] = ESP.getFreeHeap();
+
+    // Wi-Fi
+    switch (_wifiMode) {
+        case NET_MODE_STATION:      doc["wifiMode"] = "STA";    break;
+        case NET_MODE_AP_FALLBACK:  doc["wifiMode"] = "AP";     break;
+        case NET_MODE_CONNECTING:   doc["wifiMode"] = "CONNECTING"; break;
+        default:                    doc["wifiMode"] = "DISCONNECTED"; break;
+    }
+    doc["wifiSSID"] = _wifiSSID;
+    doc["wifiIP"]   = _wifiIP;
+
+    String out;
+    serializeJson(doc, out);
+    req->send(200, "application/json", out);
+}
+
+static void _handleTestStart(AsyncWebServerRequest* req) {
+    if (cmd_start_test()) {
+        req->send(200, "application/json", "{\"ok\":true}");
+    } else {
+        req->send(409, "application/json", "{\"ok\":false,\"error\":\"Test already running or motor busy\"}");
+    }
+}
+
+static void _handleTestAbort(AsyncWebServerRequest* req) {
+    if (cmd_abort_test()) {
+        req->send(200, "application/json", "{\"ok\":true}");
+    } else {
+        req->send(409, "application/json", "{\"ok\":false,\"error\":\"No test running\"}");
+    }
+}
+
+static void _handleMotorStop(AsyncWebServerRequest* req) {
+    cmd_stop_motor();
+    _webThrottleActive = false;
+    req->send(200, "application/json", "{\"ok\":true}");
+}
+
+static void _handleMotorThrottle(AsyncWebServerRequest* req) {
+    if (!req->hasParam("value", true)) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Missing 'value'\"}");
+        return;
+    }
+    if (current_step >= 0) {
+        req->send(409, "application/json", "{\"ok\":false,\"error\":\"Test running — cannot set manual throttle\"}");
+        return;
+    }
+    float val = req->getParam("value", true)->value().toFloat();
+    val = constrain(val, 0.0f, 100.0f);
+    _webThrottleActive = true;
+    _webThrottleValue  = val;
+    _webThrottleLastHB = millis();
+    cmd_set_throttle(val);
+    req->send(200, "application/json", "{\"ok\":true}");
+}
+
+static void _handleTare(AsyncWebServerRequest* req) {
+    cmd_tare();
+    req->send(200, "application/json", "{\"ok\":true}");
+}
+
+static void _handleTestResults(AsyncWebServerRequest* req) {
+    JsonDocument doc;
+    JsonArray steps = doc["steps"].to<JsonArray>();
+    for (unsigned int i = 0; i <= total_steps; i++) {
+        if (test_data[i].throttle == 0 && test_data[i].lc_samples == 0) continue;
+        JsonObject s = steps.add<JsonObject>();
+        s["step"]       = i;
+        s["throttle"]   = test_data[i].throttle;
+        s["thrust"]     = test_data[i].thrust;
+        s["torque"]     = test_data[i].torque;
+        s["voltage"]    = test_data[i].voltage;
+        s["current"]    = test_data[i].current;
+        s["power"]      = test_data[i].power;
+        s["rpm"]        = test_data[i].rpm;
+        s["roiMaxTemp"]  = test_data[i].thermal_roi_max;
+        s["frameMaxTemp"]= test_data[i].thermal_frame_max;
+        s["thermalValid"]= test_data[i].thermal_valid;
+        float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
+        s["efficiency"]  = eff;
+        s["lcSamples"]   = test_data[i].lc_samples;
+        s["sensorSamples"] = test_data[i].sensor_samples;
+    }
+    String out;
+    serializeJson(doc, out);
+    req->send(200, "application/json", out);
+}
+
+static void _handleTestCSV(AsyncWebServerRequest* req) {
+    String csv = "Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,ROI_Max_Temp(C),Frame_Max_Temp(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples\n";
+    for (unsigned int i = 0; i <= total_steps; i++) {
+        if (test_data[i].throttle == 0 && test_data[i].lc_samples == 0) continue;
+        float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
+        char row[256];
+        snprintf(row, sizeof(row),
+            "%u,%.2f,%.2f,%.2f,%.2f,%.3f,%.2f,%.0f,%.2f,%.2f,%d,%.2f,%u,%u\n",
+            i, test_data[i].throttle, test_data[i].thrust, test_data[i].torque,
+            test_data[i].voltage, test_data[i].current, test_data[i].power,
+            test_data[i].rpm, test_data[i].thermal_roi_max, test_data[i].thermal_frame_max,
+            test_data[i].thermal_valid ? 1 : 0, eff,
+            test_data[i].lc_samples, test_data[i].sensor_samples);
+        csv += row;
+    }
+    req->send(200, "text/csv", csv);
+}
+
+static void _handleGetROI(AsyncWebServerRequest* req) {
+    ThermalROI roi = thermal_get_roi();
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+        "{\"x\":%u,\"y\":%u,\"w\":%u,\"h\":%u,\"isDefault\":%s}",
+        roi.x, roi.y, roi.w, roi.h,
+        thermal_roi_is_default() ? "true" : "false");
+    req->send(200, "application/json", buf);
+}
+
+static void _handleSetROI(AsyncWebServerRequest* req) {
+    if (!req->hasParam("x", true) || !req->hasParam("y", true) ||
+        !req->hasParam("w", true) || !req->hasParam("h", true)) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Missing x/y/w/h\"}");
+        return;
+    }
+    uint8_t x = req->getParam("x", true)->value().toInt();
+    uint8_t y = req->getParam("y", true)->value().toInt();
+    uint8_t w = req->getParam("w", true)->value().toInt();
+    uint8_t h = req->getParam("h", true)->value().toInt();
+
+    if (thermal_set_roi(x, y, w, h)) {
+        req->send(200, "application/json", "{\"ok\":true}");
+    } else {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid ROI bounds\"}");
+    }
+}
+
+static void _handleWiFiStatus(AsyncWebServerRequest* req) {
+    JsonDocument doc;
+    switch (_wifiMode) {
+        case NET_MODE_STATION:      doc["mode"] = "STA";    break;
+        case NET_MODE_AP_FALLBACK:  doc["mode"] = "AP";     break;
+        case NET_MODE_CONNECTING:   doc["mode"] = "CONNECTING"; break;
+        default:                    doc["mode"] = "DISCONNECTED"; break;
+    }
+    doc["ssid"]       = _wifiSSID;
+    doc["ip"]         = _wifiIP;
+    doc["failReason"] = _wifiFailReason;
+    String out;
+    serializeJson(doc, out);
+    req->send(200, "application/json", out);
+}
+
+static void _handleWiFiCredentials(AsyncWebServerRequest* req) {
+    if (!req->hasParam("ssid", true)) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Missing 'ssid'\"}");
+        return;
+    }
+    String ssid = req->getParam("ssid", true)->value();
+    String pass = req->hasParam("pass", true) ? req->getParam("pass", true)->value() : "";
+
+    if (ssid.length() == 0) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"SSID cannot be empty\"}");
+        return;
+    }
+    if (pass.length() > 0 && pass.length() < 8) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Password must be empty (open) or at least 8 characters\"}");
+        return;
+    }
+
+    _saveCredentials(ssid, pass);
+    req->send(200, "application/json", "{\"ok\":true,\"message\":\"Credentials saved. Reconnecting...\"}");
+
+    // Schedule reconnect attempt (non-blocking via flag checked in web_loop)
+    // For simplicity, restart WiFi here after a brief delay
+    delay(500);
+    WiFi.disconnect(true);
+    delay(100);
+    if (!_tryStationConnect(ssid, pass, WIFI_STA_CONNECT_TIMEOUT_MS)) {
+        _startAP();
+    }
+}
+
+static void _handleWiFiClear(AsyncWebServerRequest* req) {
+    web_wifi_clear_credentials();
+    req->send(200, "application/json", "{\"ok\":true,\"message\":\"Credentials cleared. Reboot to enter AP mode.\"}");
+}
+
+// ---------------------------------------------------------------------------
+//  Thermal frame endpoint (binary push over WebSocket)
+// ---------------------------------------------------------------------------
+static void _pushThermalFrame() {
+    if (!thermal_is_available()) return;
+    if (_ws.count() == 0) return;
+
+    const float* frame = thermal_get_frame();
+    if (!frame) return;
+
+    // Send as binary: 4-byte header "THRM" + 768 × 2 bytes (temp × 100 as int16_t)
+    const size_t headerLen = 4;
+    const size_t payloadLen = THERMAL_PIXELS * 2;
+    const size_t totalLen = headerLen + payloadLen;
+
+    uint8_t* buf = (uint8_t*)malloc(totalLen);
+    if (!buf) return;
+
+    buf[0] = 'T'; buf[1] = 'H'; buf[2] = 'R'; buf[3] = 'M';
+    for (int i = 0; i < THERMAL_PIXELS; i++) {
+        int16_t val = (int16_t)(frame[i] * 100.0f);
+        buf[headerLen + i * 2]     = val & 0xFF;
+        buf[headerLen + i * 2 + 1] = (val >> 8) & 0xFF;
+    }
+
+    _ws.binaryAll(buf, totalLen);
+    free(buf);
+}
+
+// ---------------------------------------------------------------------------
+//  Telemetry push (JSON over WebSocket)
+// ---------------------------------------------------------------------------
+static void _pushTelemetry() {
+    if (_ws.count() == 0) return;
+
+    JsonDocument doc;
+    doc["type"]        = "telemetry";
+    doc["throttle"]    = motor.getCurrentThrottle();
+
+    const char* stateStr = "IDLE";
+    switch (motor.getState()) {
+        case MotorESC::STATE_RUNNING:       stateStr = "RUNNING";  break;
+        case MotorESC::STATE_ACCELERATING:  stateStr = "ACCEL";    break;
+        case MotorESC::STATE_DECELERATING:  stateStr = "DECEL";    break;
+        default: break;
+    }
+    doc["motorState"]  = stateStr;
+    doc["thrust"]      = lc_value_1;
+    doc["torque"]      = lc_value_2;
+    doc["voltage"]     = bus_voltage;
+    doc["current"]     = current;
+    doc["power"]       = power;
+    doc["rpm"]         = rpm;
+    doc["roiMaxTemp"]  = thermal_get_roi_max();
+    doc["frameMaxTemp"]= thermal_get_frame_max();
+    doc["thermalOk"]   = thermal_is_available() && thermal_get_frame_age_ms() < THERMAL_STALE_MS;
+
+    doc["testRunning"] = (current_step >= 0);
+    doc["currentStep"] = current_step;
+    doc["totalSteps"]  = total_steps;
+    doc["freeHeap"]    = ESP.getFreeHeap();
+
+    String out;
+    serializeJson(doc, out);
+    _ws.textAll(out);
+}
+
+// ---------------------------------------------------------------------------
+//  Public API
+// ---------------------------------------------------------------------------
+
+void web_init() {
+    // Mount LittleFS for static assets
+    if (!LittleFS.begin(true)) {
+        DEBUG_println(FST("# LittleFS mount failed — web UI may not load."));
+    } else {
+        DEBUG_println(FST("# LittleFS mounted."));
+    }
+
+    // --- Wi-Fi ---
+    String ssid = _loadSSID();
+    if (ssid.length() == 0) {
+        DEBUG_println(FST("# No Wi-Fi credentials stored — starting AP."));
+        _startAP();
+    } else {
+        String pass = _loadPass();
+        if (!_tryStationConnect(ssid, pass, WIFI_STA_CONNECT_TIMEOUT_MS)) {
+            DEBUG_println(FST("# Station connect failed — starting AP fallback."));
+            _startAP();
+        }
+    }
+
+    // --- WebSocket ---
+    _ws.onEvent(_onWsEvent);
+    _server.addHandler(&_ws);
+
+    // --- REST API ---
+    _server.on("/api/status",          HTTP_GET,  _handleStatus);
+    _server.on("/api/test/start",      HTTP_POST, _handleTestStart);
+    _server.on("/api/test/abort",      HTTP_POST, _handleTestAbort);
+    _server.on("/api/motor/stop",      HTTP_POST, _handleMotorStop);
+    _server.on("/api/motor/throttle",  HTTP_POST, _handleMotorThrottle);
+    _server.on("/api/sensors/tare",    HTTP_POST, _handleTare);
+    _server.on("/api/test/results",    HTTP_GET,  _handleTestResults);
+    _server.on("/api/test/csv",        HTTP_GET,  _handleTestCSV);
+    _server.on("/api/thermal/roi",     HTTP_GET,  _handleGetROI);
+    _server.on("/api/thermal/roi",     HTTP_POST, _handleSetROI);
+    _server.on("/api/wifi/status",     HTTP_GET,  _handleWiFiStatus);
+    _server.on("/api/wifi/credentials",HTTP_POST, _handleWiFiCredentials);
+    _server.on("/api/wifi/clear",      HTTP_POST, _handleWiFiClear);
+
+    // --- Static files from LittleFS ---
+    _server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+
+    _server.begin();
+    DEBUG_println(FST("# Web server started."));
+}
+
+void web_loop() {
+    _ws.cleanupClients();
+
+    unsigned long now = millis();
+
+    // Push telemetry at configured rate
+    if (now - _lastTelemetryMs >= WEB_TELEMETRY_INTERVAL_MS) {
+        _lastTelemetryMs = now;
+        _pushTelemetry();
+    }
+
+    // Push thermal frame at configured rate (throttle if heap is low)
+    unsigned long thermalInterval = WEB_THERMAL_INTERVAL_MS;
+    if (ESP.getFreeHeap() < HEAP_SAFETY_MARGIN_BYTES) {
+        thermalInterval *= 4;  // reduce to ~0.5 Hz under memory pressure
+    }
+    if (now - _lastThermalMs >= thermalInterval) {
+        _lastThermalMs = now;
+        _pushThermalFrame();
+    }
+
+    // Runtime station link monitoring
+    if (_wifiMode == NET_MODE_STATION && WiFi.status() != WL_CONNECTED) {
+        DEBUG_println(FST("# Wi-Fi station link lost — attempting reconnect..."));
+        _wifiMode = NET_MODE_CONNECTING;
+        unsigned long start = millis();
+        while (WiFi.status() != WL_CONNECTED && (millis() - start) < WIFI_STA_RECONNECT_TIMEOUT_MS) {
+            delay(250);
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            _wifiMode = NET_MODE_STATION;
+            _wifiIP = WiFi.localIP().toString();
+            DEBUG_println(FST("# Wi-Fi reconnected."));
+        } else {
+            _wifiFailReason = "Station link lost, reconnect timeout";
+            DEBUG_println(FST("# Reconnect failed — latching to AP fallback."));
+            WiFi.disconnect(true);
+            _startAP();
+        }
+    }
+}
+
+WiFiStatus web_get_wifi_status() {
+    return { _wifiMode, _wifiSSID, _wifiIP, _wifiFailReason };
+}
+
+bool web_throttle_is_active() {
+    if (!_webThrottleActive) return false;
+    // Check heartbeat timeout
+    if (millis() - _webThrottleLastHB > WEB_THROTTLE_TIMEOUT_MS) {
+        return false;  // timed out — main loop should ramp down
+    }
+    return true;
+}
+
+float web_throttle_get_value() {
+    return _webThrottleValue;
+}
+
+void web_throttle_clear() {
+    _webThrottleActive = false;
+    _webThrottleValue  = 0.0f;
+}

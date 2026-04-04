@@ -1,5 +1,7 @@
 #pragma once
 
+#include "thermal.h"
+
 typedef struct {
     float throttle;          // Throttle percentage (0.0 to 100.0)
     float thrust;            // Thrust value from load cell 1
@@ -8,8 +10,9 @@ typedef struct {
     float current;           // Current from INA226
     float power;             // Power from INA226
     float rpm;               // Current RPM value    
-    float temperature;       // Temperature from thermocouple
-    float temperature_max;
+    float thermal_roi_max;   // Max temperature inside ROI (°C)
+    float thermal_frame_max; // Max temperature across entire frame (°C)
+    bool  thermal_valid;     // True if thermal data was from a fresh frame
     unsigned int lc_samples; // Number of load cell samples
     unsigned int sensor_samples; // Number of other sensor samples
 } test_data_t;
@@ -31,7 +34,3 @@ extern float bus_voltage;       //  Volt
 extern float shunt_voltage;     //  Volt
 extern float current;           //  Ampere
 extern float power;             //  Watt
-
-extern float thermocouple_temp;
-extern float mlx_ambient_temp; // MLX90614 ambient temperature
-extern float mlx_object_temp;  // MLX90614 object temperature

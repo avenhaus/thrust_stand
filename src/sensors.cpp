@@ -1,11 +1,10 @@
 #include <Arduino.h>
 #include "config.h"
 #include "sensors.h"
+#include "thermal.h"
 #include "rpm_sensor.h"
 #include <HX711_ADC.h>
 #include <INA226.h>
-#include "Adafruit_MAX31855.h"
-#include <Adafruit_MLX90614.h>
 
 
 //HX711 constructor (dout pin, sck pin)
@@ -30,14 +29,6 @@ float shunt_voltage = 0.0;     //  Volt
 float current = 0.0;           //  Ampere
 float power = 0.0;             //  Watt
 
-Adafruit_MAX31855 thermocouple(MAX31855_CS_PIN);
-float thermocouple_temp = 0.0; // Thermocouple temperature value
-
-Adafruit_MLX90614 mlx = Adafruit_MLX90614();
-bool found_mlx = false; // Flag to check if MLX90614 sensor is found
-float mlx_ambient_temp = 0.0; // MLX90614 ambient temperature
-float mlx_object_temp = 0.0; // MLX90614 object temperature
-
 
 unsigned int lc_value_count = 0; // Counter for number of values read from sensors
 float thrust_sum = 0.0; // Sum of thrust readings
@@ -48,8 +39,11 @@ float bus_voltage_sum = 0.0; // Sum of bus voltage readings
 float shunt_voltage_sum = 0.0; // Sum of shunt voltage readings
 float current_sum = 0.0; // Sum of current readings
 float power_sum = 0.0; // Sum of power readings
-float thermocouple_temp_sum = 0.0; // Thermocouple maximum temperature value
-float thermocouple_max_temp = 0.0; // Thermocouple maximum temperature value
+
+// Thermal tracking for test steps
+float thermal_roi_max_step = 0.0f;   // Max ROI temp seen during this step
+float thermal_frame_max_step = 0.0f; // Max frame temp seen during this step
+bool  thermal_had_valid_frame = false; // Did we get at least one valid frame this step?
 
 RpmSensor rpm_sensor; // RPM sensor instance
 float rpm = 0.0; // Current RPM value
@@ -95,16 +89,8 @@ bool init_sensors(boolean tare) {
   //calibrate_ina226();
   DEBUG_println(FST("# INA226 Current Sensor initialized."));
 
-  DEBUG_println(FST("# Initialize MAX31855 Thermocouple ..."));
-  if (!thermocouple.begin()) {
-    DEBUG_println(FST("# Thermocouple MAX31855 initialization failed!"));
-  }
-  DEBUG_println(FST("# Thermocouple MAX31855 initialized."));
-
-  DEBUG_println(FST("# Initialize MLX90614 Contactless Temperature Sensor ..."));
-  if (!mlx.begin()) { 
-    DEBUG_println(FST("# Error connecting to MLX90614 contactless temperature sensor. Check wiring.")); 
-  } else { found_mlx = true; }
+  // Initialize MLX90640 thermal sensor (non-critical — continues if absent)
+  thermal_init();
 
   DEBUG_println(FST("# Initialize RPM Sensor ..."));
   rpm_sensor.begin(RPM_SENSOR_PIN);
@@ -142,19 +128,8 @@ bool run_sensors(bool update_stats) {
 
   rpm = rpm_sensor.update(); // Update RPM sensor
 
-  thermocouple_temp = thermocouple.readCelsius();
-  if (isnan(thermocouple_temp)) {
-    DEBUG_println(FST("# Thermocouple fault(s) detected!"));
-    uint8_t e = thermocouple.readError();
-    if (e & MAX31855_FAULT_OPEN) DEBUG_println(FST("#   FAULT: Thermocouple is open - no connections."));
-    if (e & MAX31855_FAULT_SHORT_GND) DEBUG_println(FST("#   FAULT: Thermocouple is short-circuited to GND."));
-    if (e & MAX31855_FAULT_SHORT_VCC) DEBUG_println(FST("#   FAULT: Thermocouple is short-circuited to VCC."));
-  }
-
-  if (found_mlx) { // Only read MLX90614 if it was found
-    mlx_ambient_temp = mlx.readAmbientTempC();
-    mlx_object_temp = mlx.readObjectTempC();
-  }
+  // Update thermal sensor (non-blocking)
+  thermal_update();
 
   if (update_stats) {
     sensor_value_count++; // Increment the counter for number of values read from sensors
@@ -163,10 +138,14 @@ bool run_sensors(bool update_stats) {
     current_sum += current; // Add the current value to the sum
     power_sum += power; // Add the current power value to the sum
 
-    thermocouple_temp_sum += thermocouple_temp; // Add the current thermocouple temperature value to the sum
-    if (thermocouple_temp > thermocouple_max_temp) {
-        thermocouple_max_temp = thermocouple_temp; // update maximum temperature
-    } 
+    // Track thermal max temperatures per step
+    if (thermal_is_available() && thermal_get_frame_age_ms() < THERMAL_STALE_MS) {
+      thermal_had_valid_frame = true;
+      float roi = thermal_get_roi_max();
+      float frm = thermal_get_frame_max();
+      if (roi > thermal_roi_max_step) thermal_roi_max_step = roi;
+      if (frm > thermal_frame_max_step) thermal_frame_max_step = frm;
+    }
   }
 
 
@@ -234,17 +213,19 @@ void tare_sensors() {
 }
 
 void reset_stats() {
-    lc_value_count = 0; // Counter for number of values read from sensors
-    thrust_sum = 0.0; // Sum of thrust readings
-    torque_sum = 0.0; // Sum of torque readings
+    lc_value_count = 0;
+    thrust_sum = 0.0;
+    torque_sum = 0.0;
 
-    sensor_value_count = 0; // Counter for number of values read from sensors
-    bus_voltage_sum = 0.0; // Sum of bus voltage readings
-    shunt_voltage_sum = 0.0; // Sum of shunt voltage readings
-    current_sum = 0.0; // Sum of current readings
-    power_sum = 0.0; // Sum of power readings
-    thermocouple_temp_sum = 0.0; // Sum of thermocouple temperature readings
-    thermocouple_max_temp = 0.0; // Thermocouple maximum temperature value
+    sensor_value_count = 0;
+    bus_voltage_sum = 0.0;
+    shunt_voltage_sum = 0.0;
+    current_sum = 0.0;
+    power_sum = 0.0;
+
+    thermal_roi_max_step = 0.0f;
+    thermal_frame_max_step = 0.0f;
+    thermal_had_valid_frame = false;
 }
 
 // Fill in the test_data_t structure with the current average sensor values
@@ -273,16 +254,16 @@ void get_stats(test_data_t* data){
         data->voltage = bus_voltage_sum / sensor_value_count;
         data->current = current_sum / sensor_value_count;
         data->power = power_sum / sensor_value_count;
-        data->temperature = thermocouple_temp_sum / sensor_value_count;
     } else {
         data->voltage = bus_voltage; // Use current values if no samples
         data->current = current;
         data->power = power;
-        data->temperature = thermocouple_temp;
     }
     
-    // Max temperature doesn't need averaging
-    data->temperature_max = thermocouple_max_temp;
+    // Thermal — store per-step max values
+    data->thermal_roi_max   = thermal_roi_max_step;
+    data->thermal_frame_max = thermal_frame_max_step;
+    data->thermal_valid     = thermal_had_valid_frame;
     
     // Add RPM values from the global variables
     data->rpm = rpm_sensor.getRPM();

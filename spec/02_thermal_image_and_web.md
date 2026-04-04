@@ -40,7 +40,8 @@ The new implementation must reuse the existing control and safety paths wherever
 - Framework: Arduino
 - Build system: PlatformIO
 - Existing serial monitor speed: `115200`
-- Existing shared I2C bus: GPIO `21` SDA and GPIO `22` SCL
+- Existing I2C bus (Wire): GPIO `21` SDA and GPIO `22` SCL — used by INA226
+- Dedicated I2C bus (Wire1): GPIO `16` SDA and GPIO `17` SCL — used by MLX90640
 
 ## New Hardware Scope
 
@@ -48,12 +49,15 @@ The new thermal feature is based on:
 
 - MLX90640ESF-BAB thermal array sensor
 - `32 x 24` pixel thermal frame
-- I2C communication on the existing shared bus
+- dedicated I2C bus on GPIO `16` SDA and GPIO `17` SCL (ESP32 Wire1)
+
+The MLX90640 uses a separate I2C bus from the INA226 to avoid bus contention. At 8 Hz refresh rate, the MLX90640 transfers ~26 KB/s which would consume over half the bandwidth of a shared 400 kHz bus. Running on its own bus allows independent 1 MHz (FM+) operation and eliminates blocking interference with electrical telemetry sampling.
+
+The MLX90640 replaces the existing MAX31855 thermocouple and MLX90614 IR temperature sensor. Those sensors and their dependencies should be removed from the firmware.
 
 The design assumes the MLX90640 will coexist with:
 
-- INA226 current and voltage sensor
-- MLX90614 IR temperature sensor, if still enabled
+- INA226 current and voltage sensor (on the primary I2C bus, Wire)
 - the rest of the existing thrust stand hardware
 
 ## Primary Use Cases
@@ -129,7 +133,7 @@ The implementation must also define an operator workflow for ROI handling:
 - provide a default ROI so the system can boot into a known state
 - allow the operator to adjust the ROI from the web page during aiming
 - expose the active ROI coordinates through the browser API
-- persist the chosen ROI across reboots if persistent storage is already being used for web or configuration data
+- persist the chosen ROI across reboots using ESP32 Preferences/NVS (the same storage backend used for Wi-Fi credentials)
 - clearly indicate when the ROI is still using a default or unverified placement
 
 This matters because the hottest pixel in the frame may be outside the motor if the sensor is mis-aimed or if another hot object enters the scene.
@@ -179,7 +183,6 @@ The web page must display current live values for at least:
 - current
 - power
 - RPM
-- thermocouple temperature
 - thermal ROI max temperature
 - current test step and total steps
 
@@ -208,9 +211,43 @@ Thermal metrics must be part of the result model, not only the live view. At min
 
 ### Wi-Fi Mode
 
-The default networking mode should be SoftAP-first so the rig is operable without any external router.
+The firmware must support station mode as the primary networking path and fall back to a local configuration AP using a deterministic, latched policy.
 
-Station mode may be added later, but it is not required for initial completion unless the implementing agent finds that SoftAP cannot satisfy the browser workflow.
+The boot-time network sequence must be:
+
+1. Load Wi-Fi credentials from NVM (ESP32 Preferences/NVS).
+2. If no credentials are stored, start a configuration AP immediately.
+3. If credentials exist, attempt one bounded station-connect window (recommended `10 s`, configurable in `config.h`).
+4. If the station attempt fails to obtain an IP within the window, start the configuration AP and latch into AP mode.
+5. Once latched into AP mode, remain there until the operator saves new credentials or explicitly requests a reconnect through the web UI or serial command.
+
+After a successful station session, if the link drops at runtime:
+
+1. Allow one bounded reconnect window (recommended `15 s`, configurable in `config.h`).
+2. If the reconnect window expires without regaining an IP, transition to the configuration AP and latch.
+3. Do not oscillate between station retries and AP mode.
+
+The configuration AP must:
+
+- use a deterministic SSID derived from a project prefix and the chip ID, e.g. `ThrustStand_XXXX`
+- use a default password defined in `config.h` (minimum 8 characters)
+- serve the same web UI used in station mode, plus a Wi-Fi settings panel for credential entry
+- accept new SSID and password from the operator, validate non-empty SSID, persist them in NVM, and allow the operator to trigger a station reconnect attempt
+
+The firmware must expose the current network mode (station, AP fallback, connecting, disconnected), the last failure reason, and the AP SSID/IP through shared status accessible to both serial output and the web API.
+
+### Wi-Fi Credential Management
+
+Wi-Fi credentials must be stored in NVM using ESP32 Preferences/NVS under a dedicated namespace.
+
+The implementation must:
+
+- store SSID and password as separate entries
+- load credentials on boot before attempting station connect
+- allow credentials to be updated from the web UI in both station mode and AP fallback mode
+- allow credentials to be cleared from the web UI or the serial command `w` (mnemonic: Wi-Fi), causing the next boot to enter AP mode
+- accept empty passwords for open networks; require minimum 8 characters for non-empty passwords
+- never expose the stored password in API responses or serial output
 
 ### Web Protocol Split
 
@@ -245,7 +282,7 @@ The implementation must not assume the ESP32 can serve high-frame-rate video. A 
 
 The recommended baseline target is:
 
-- thermal frame acquisition target of roughly `2-4 Hz` during active motor testing
+- thermal frame acquisition target of roughly `8 Hz` during active motor testing
 - optional higher idle-rate aiming updates when the motor is not running, if headroom permits
 - browser display updates that may drop frames rather than block control or sensor processing
 
@@ -269,8 +306,8 @@ The web page must include these areas:
 - thrust and torque
 - voltage, current, and power
 - RPM
-- thermocouple temperature
 - thermal max temperature
+- compact network status indicator (mode and IP)
 
 ### 3. Test Control Panel
 
@@ -288,6 +325,18 @@ The web page must include these areas:
 - latest step results
 - final results or CSV access after completion
 
+### 5. Network Settings Panel
+
+- current network mode (station connected, AP fallback, connecting)
+- station SSID and IP when connected
+- AP SSID and IP when in fallback mode
+- last connection failure reason
+- form to enter new SSID and password
+- button to save credentials and trigger station reconnect
+- button to clear stored credentials
+
+This panel must be functional in AP fallback mode so the operator can provision Wi-Fi without serial access.
+
 The UI should be designed for operator clarity rather than visual complexity.
 
 ## API Requirements
@@ -304,6 +353,9 @@ The exact endpoint names may differ, but the browser-accessible interface must c
 - tare sensors
 - set manual throttle when safe
 - fetch test results or CSV output
+- fetch current Wi-Fi status, mode, and connection details
+- submit new Wi-Fi credentials and trigger station reconnect
+- clear stored Wi-Fi credentials
 
 The API responses must be structured and stable enough that the browser UI can be implemented without scraping serial-like text.
 
@@ -354,7 +406,7 @@ It must:
 
 The implementation should treat the following as concrete operating targets unless hardware testing proves a different limit is required:
 
-- thermal acquisition target: `2-4 Hz` during active tests
+- thermal acquisition target: `8 Hz` during active tests
 - motor-control and main-loop work should not be blocked by thermal or web work for more than about `10 ms` at a time
 - maintain a measurable free-heap safety margin during active Wi-Fi and thermal streaming, with the exact threshold documented if tuned during implementation
 - prefer dropping or coalescing browser updates over delaying motor or sensor control logic
@@ -381,7 +433,10 @@ The system must detect and report at least these conditions:
 - MLX90640 initialization failure
 - thermal frame read failure or timeout
 - stale thermal frame data
-- Wi-Fi not available
+- Wi-Fi credentials missing, triggering AP mode
+- station connect failed within bounded window, triggering AP fallback
+- station link lost at runtime, reconnect window active or exhausted
+- current network mode transitions (station, AP fallback, connecting)
 - browser not connected
 - test command rejected due to invalid current state
 - manual web throttle timeout or disconnect fallback activation
@@ -413,9 +468,11 @@ The task is complete only when all of the following are true:
 7. The browser can start, abort, stop, and monitor a motor test without bypassing existing safety logic.
 8. Live browser telemetry includes motor state, throttle, key test values, and thermal ROI max temperature.
 9. Loss of browser connection or temporary Wi-Fi instability does not break a running test or leave the motor in an unsafe state, and manual web throttle falls back according to the documented timeout policy.
-10. Thermal metrics are available both live and in test-result data for completed steps and final run summary.
-11. The added thermal and web features do not introduce unacceptable loop blocking or obvious memory instability.
-12. Documentation matches the implemented browser workflow, ROI behavior, disconnect behavior, thermal behavior, and limitations.
+10. The firmware boots into AP provisioning mode when no Wi-Fi credentials are stored, attempts station mode when credentials exist, and latches into AP fallback after a bounded failed connect window without oscillating between modes.
+11. Wi-Fi credentials can be entered, saved to NVM, and used on reboot to reconnect in station mode without operator re-entry.
+12. Thermal metrics are available both live and in test-result data for completed steps and final run summary.
+13. The added thermal and web features do not introduce unacceptable loop blocking or obvious memory instability.
+14. Documentation matches the implemented browser workflow, network provisioning, ROI behavior, disconnect behavior, thermal behavior, and limitations.
 
 ## Suggested File-Level Approach
 
@@ -425,7 +482,7 @@ The exact filenames may vary, but the recommended implementation shape is:
 - extend `src/sensors.cpp` and `include/sensors.h` with thermal support
 - add a dedicated thermal module if the MLX90640 logic becomes too large for `sensors.cpp`
 - add a dedicated web module for Wi-Fi, HTTP, and WebSocket behavior
-- extend `include/config.h` with thermal, Wi-Fi, and ROI defaults
+- extend `include/config.h` with thermal, Wi-Fi (SSID prefix, default AP password, connect timeouts), and ROI defaults
 - update `platformio.ini` with required dependencies and any filesystem or partition changes
 
 ## Implementation Priorities
@@ -443,13 +500,15 @@ The implementing agent should work in this order:
 
 - expose motor, test, and thermal state to shared interfaces
 - unify serial and web command paths where needed
+- add serial command `w` to clear stored Wi-Fi credentials
 - add manual web-control timeout and disconnect fallback behavior
 
 ### Phase 3. Web Transport Layer
 
-- add Wi-Fi setup
-- add HTTP and WebSocket endpoints
-- verify browser-visible telemetry and commands
+- add Wi-Fi setup with station-first connect and deterministic AP fallback
+- add NVM-backed credential storage and AP-hosted provisioning flow
+- add HTTP and WebSocket endpoints including Wi-Fi status and credential management
+- verify browser-visible telemetry, commands, and network provisioning
 
 ### Phase 4. Browser UI
 
@@ -469,14 +528,15 @@ The implementing agent should work in this order:
 
 The implementing agent should watch closely for:
 
-- I2C bus contention between MLX90640, INA226, and MLX90614
-- thermal frame reads that block other time-sensitive work
+- thermal frame reads that block other time-sensitive work (mitigated by dedicated I2C bus)
 - Wi-Fi or web serving load affecting motor responsiveness
 - heap pressure from web assets, frame buffers, and live updates
 - incorrect temperature reporting caused by using frame-wide max instead of motor ROI max
 - mismatched command behavior between serial and browser control paths
 - stale or default ROI being mistaken for a validated motor target
 - browser disconnect leaving manual control state ambiguous if timeout behavior is not implemented cleanly
+- mode flapping between station retries and AP fallback under marginal Wi-Fi if the latched fallback policy is not enforced
+- NVM wear from frequent credential writes if the provisioning UI does not debounce or validate before persisting
 - no security mechanisms for web control
 
 ## Out Of Scope
@@ -492,4 +552,4 @@ Unless explicitly requested later, the following are out of scope:
 
 ## Definition Of Done
 
-The feature is considered complete when the repository contains a stable extension of the thrust-stand firmware that uses an MLX90640ESF-BAB to provide a useful thermal aiming and motor max-temperature workflow, plus an ESP32-hosted web interface for live viewing, live telemetry, and safe motor-test control.
+The feature is considered complete when the repository contains a stable extension of the thrust-stand firmware that uses an MLX90640ESF-BAB to provide a useful thermal aiming and motor max-temperature workflow, plus an ESP32-hosted web interface for live viewing, live telemetry, safe motor-test control, and self-service Wi-Fi provisioning with deterministic station/AP fallback behavior.

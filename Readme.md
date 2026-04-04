@@ -1,6 +1,8 @@
 # ESP32 Thrust Stand
 
-ESP32-based test stand firmware for measuring brushless motor and propeller performance. The project drives a standard RC ESC, samples thrust and torque through two HX711 load-cell amplifiers, reads electrical and temperature data, and prints live telemetry plus CSV-friendly test results over the serial port.
+ESP32-based test stand firmware for measuring brushless motor and propeller performance. The project drives a standard RC ESC, samples thrust and torque through two HX711 load-cell amplifiers, reads electrical data, and prints live telemetry plus CSV-friendly test results over the serial port.
+
+The firmware also includes an MLX90640 thermal imaging sensor for motor temperature monitoring and a browser-based web UI for thermal aiming, live telemetry, and test control.
 
 The current firmware targets the `lolin32` PlatformIO environment and is built with the Arduino framework.
 
@@ -10,8 +12,10 @@ The current firmware targets the `lolin32` PlatformIO environment and is built w
 - Measures thrust and torque using two HX711 load cells
 - Reads bus voltage, current, and electrical power with an INA226
 - Measures RPM using an optical sensor input
-- Reads motor temperature with a MAX31855 thermocouple interface
-- Optionally reads ambient and object temperature from an MLX90614
+- Reads a 32×24 thermal image from an MLX90640 sensor for motor temperature monitoring
+- Computes max temperature from a configurable region of interest (ROI)
+- Hosts a browser-accessible web UI for thermal aiming, live telemetry, and test control
+- Supports Wi-Fi station mode with automatic AP fallback for provisioning
 - Supports manual throttle control, analog throttle control, and automated stepped test runs
 - Prints live telemetry and CSV output for later analysis
 
@@ -24,8 +28,7 @@ The firmware is currently written around this sensor stack:
 - Two HX711 boards with load cells
 - INA226 current and voltage sensor
 - Optical RPM sensor
-- MAX31855 thermocouple interface
-- MLX90614 IR temperature sensor
+- MLX90640ESF-BAB thermal array sensor (32×24 pixels, I2C)
 - Potentiometer for analog throttle control
 - Optional tare and start/stop buttons
 
@@ -41,7 +44,7 @@ The active pin configuration is defined in `include/config.h`.
 | HX711 #1 DOUT / SCK | 34 / 33 |
 | HX711 #2 DOUT / SCK | 35 / 32 |
 | INA226 I2C SDA / SCL | 21 / 22 |
-| MAX31855 CS | 27 |
+| MLX90640 I2C SDA / SCL | 16 / 17 (dedicated bus) |
 | Tare button | 0 |
 | Start/stop button | 25 |
 | Status LED | 5 |
@@ -57,10 +60,11 @@ On boot the firmware:
 1. Initializes the status LED
 2. Starts the serial logger at `115200`
 3. Initializes and arms the ESC
-4. Initializes the sensor stack
-5. Prints the serial help menu
+4. Initializes the sensor stack (including the MLX90640 thermal sensor)
+5. Mounts LittleFS and starts the Wi-Fi and web server
+6. Prints the serial help menu
 
-If a sensor is missing, the firmware usually logs an error and continues where possible instead of halting permanently.
+If a sensor is missing, the firmware logs an error and continues where possible. The thermal sensor is optional — if the MLX90640 is absent, the firmware marks thermal features unavailable but operates normally otherwise.
 
 ### Manual Control
 
@@ -103,6 +107,7 @@ Open a serial monitor at `115200` baud and send one of the following commands:
 | `s` | Start test, or abort the running test |
 | `p` | Print stored CSV results |
 | `a` | Enable analog throttle control from the potentiometer |
+| `w` | Clear stored Wi-Fi credentials (next boot enters AP mode) |
 | `SPACE` | Stop the motor |
 | `h` | Print the help text again |
 | `0`-`9` | Set throttle from `10%` to `100%` |
@@ -120,9 +125,9 @@ While running, the serial port continuously updates a single status line with fi
 - Thrust and torque
 - Voltage, current, and power
 - RPM
-- Thermocouple temperature
-- MLX ambient and object temperature
+- Thermal ROI max temperature and frame max temperature
 - Potentiometer value
+- Free heap memory
 
 ### CSV Results
 
@@ -135,7 +140,7 @@ After a completed or aborted test, the firmware prints a CSV block headed by:
 The current row format is:
 
 ```text
-Step,Throttle(%),Thrust(g),Voltage(V),Current(A),Power(W),RPM,Efficiency(g/W),Samples
+Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,ROI_Max_Temp(C),Frame_Max_Temp(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples
 ```
 
 This output is intended to be copied into a spreadsheet or analysis script.
@@ -156,11 +161,21 @@ This project uses PlatformIO.
 pio run
 ```
 
-### Upload
+### Upload Firmware
 
 ```bash
 pio run -t upload
 ```
+
+### Upload Web UI (LittleFS)
+
+The browser UI is stored in the `data/` folder and served from LittleFS. After modifying `data/index.html`, upload it with:
+
+```bash
+pio run -t uploadfs
+```
+
+This must be done at least once before the web UI will load in a browser.
 
 ### Monitor Serial Output
 
@@ -179,15 +194,65 @@ framework = arduino
 
 ## Libraries
 
-The project currently depends on these PlatformIO libraries:
+The project depends on these PlatformIO libraries:
 
-- `HX711_ADC`
-- `INA226`
-- `Adafruit MAX31855 library`
-- `Adafruit MLX90614 Library`
-- `SimpleKalmanFilter`
+- `HX711_ADC` — load cell amplifier driver
+- `INA226` — voltage/current/power sensor
+- `Adafruit MLX90640` — thermal array sensor driver
+- `ESPAsyncWebServer` (esp32async fork) — async HTTP + WebSocket server
+- `ArduinoJson` — JSON serialization for API and WebSocket
+- `LittleFS` — filesystem for serving web UI assets
 
 PlatformIO installs them automatically from `platformio.ini`.
+
+## Wi-Fi and Web UI
+
+### Wi-Fi Provisioning
+
+On first boot (or after credentials are cleared), the firmware starts a Wi-Fi access point:
+
+- **SSID**: `ThrustStand_XXXX` (where XXXX is derived from the chip ID)
+- **Password**: `thruststand` (configurable in `config.h`)
+
+Connect to this AP and open `http://192.168.4.1` in a browser to enter your Wi-Fi SSID and password. The credentials are saved to NVS and used on subsequent boots.
+
+If station connection fails within 10 seconds, the firmware latches into AP fallback mode. To clear stored credentials, use the `w` serial command or the web UI.
+
+### Web UI
+
+The browser UI is a single-page app served from LittleFS at the root URL. It provides:
+
+- **Thermal Panel** — Scaled-up live heatmap from the MLX90640 (32×24 pixels rendered via HTML5 Canvas with an ironbow palette). Includes a draggable ROI overlay to target the motor area, and displays ROI max and frame max temperatures.
+- **Telemetry Panel** — Live values for throttle, motor state, thrust, torque, voltage, current, power, RPM, and thermal temperature, updated at ~10 Hz via WebSocket.
+- **Test Control Panel** — Start, abort, and stop buttons, plus a manual throttle slider with heartbeat-backed safety timeout.
+- **Test Results Panel** — Table of completed test step data with CSV download.
+- **Network Settings Panel** — View current Wi-Fi mode and IP, enter new credentials, or clear stored credentials.
+
+### Web Throttle Safety
+
+Manual throttle control from the browser uses a heartbeat mechanism. If the browser disconnects or stops sending heartbeats for 5 seconds, the firmware automatically ramps the motor to zero.
+
+### ROI (Region of Interest)
+
+The thermal ROI defines which pixels of the thermal frame are used to compute motor temperature. It can be adjusted by dragging on the thermal image in the web UI. The ROI is persisted in NVS across reboots. The UI warns when the ROI is still at its default position.
+
+### API Endpoints
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| GET | `/api/status` | Full status snapshot |
+| POST | `/api/test/start` | Start a test |
+| POST | `/api/test/abort` | Abort running test |
+| POST | `/api/motor/stop` | Stop motor |
+| POST | `/api/motor/throttle` | Set manual throttle (param: `value`) |
+| POST | `/api/sensors/tare` | Tare load cells |
+| GET | `/api/test/results` | JSON test results |
+| GET | `/api/test/csv` | CSV download |
+| GET | `/api/thermal/roi` | Get current ROI |
+| POST | `/api/thermal/roi` | Set ROI (params: `x`, `y`, `w`, `h`) |
+| GET | `/api/wifi/status` | Wi-Fi status |
+| POST | `/api/wifi/credentials` | Save Wi-Fi credentials (params: `ssid`, `pass`) |
+| POST | `/api/wifi/clear` | Clear stored credentials |
 
 ## Calibration Notes
 

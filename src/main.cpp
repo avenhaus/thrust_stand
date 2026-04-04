@@ -7,11 +7,11 @@
 
 #include <Arduino.h>
 #include "config.h"
-#include <SPI.h>
-#include <EEPROM.h>
 #include "sensors.h"
 #include "motor.h"
 #include "analog.h"
+#include "thermal.h"
+#include "web_server.h"
 
 
 PROGMEM const char EMPTY_STRING[] =  "";
@@ -56,13 +56,20 @@ extern float rpm; // Current RPM value
 
 void check_serial();
 void setThrottle(float throttle);
-void tare_sensors();
 void start_test();
 void run_test();
-void abort_test(); // Add this line
+void abort_test();
 void print_stats(const test_data_t& data);
-void print_csv_results(); // Add this line
-void print_help(); // Add this function declaration
+void print_csv_results();
+void print_help();
+
+// ---- Command functions callable from serial AND web ----
+bool cmd_start_test();
+bool cmd_abort_test();
+void cmd_stop_motor();
+void cmd_set_throttle(float pct);
+void cmd_tare();
+void cmd_web_throttle_timeout();
 
 /***********************************************************\
  * Initialization Code
@@ -97,6 +104,9 @@ void setup() {
     DEBUG_println(FST("# Sensors initialization failed!"));
     //while (1) { delay(1000); } // Halt the program if sensors initialization fails
   }
+
+  // Initialize Wi-Fi and web server
+  web_init();
   
   // Print keyboard command help
   print_help();
@@ -135,14 +145,14 @@ void loop() {
       Serial.print(power);
       Serial.print(" | RPM: ");
       Serial.print(rpm);
-      Serial.print(" | Temp: ");
-      Serial.print(thermocouple_temp);
-      Serial.print(" | Amb: ");
-      Serial.print(mlx_ambient_temp);
-      Serial.print(" | Obj: ");
-      Serial.print(mlx_object_temp);
-      Serial.print(" | Pot: ");
+      Serial.print(" | ROI: ");
+      Serial.print(thermal_get_roi_max(), 1);
+      Serial.print("C | Frm: ");
+      Serial.print(thermal_get_frame_max(), 1);
+      Serial.print("C | Pot: ");
       Serial.print(poti_value);
+      Serial.print(" | Heap: ");
+      Serial.print(ESP.getFreeHeap());
       Serial.print("   \r");
       t = millis();
     }
@@ -158,6 +168,12 @@ void loop() {
     // Use potentiometer value for throttle control
     motor.setThrottle(poti_value * 100.0); 
   }
+
+  // Web throttle timeout check
+  cmd_web_throttle_timeout();
+
+  // Web server loop (telemetry + thermal push)
+  web_loop();
 }
 
 void setThrottle(float throttle) {
@@ -203,6 +219,7 @@ void check_serial() {
       DEBUG_printf(FST("\n\n# Knob is at %d%%. Turn to 0 to start analog throttle control.\n"), (int)poti_value);
     } else {  analogThrottle = true; }
   }
+  else if (inByte == 'w') { web_wifi_clear_credentials(); }
   else if (inByte == 'h') { print_help(); } // Print help message
 }
 
@@ -232,7 +249,7 @@ void print_stats(const test_data_t& data) {
     }
   DEBUG_printf(FST("Power: %.2f | "), data.power);
   DEBUG_printf(FST("RPM: %d | "), (uint32_t)data.rpm);
-  DEBUG_printf(FST("Temperature: %.2f | Max: %.2f | "), data.temperature, data.temperature_max);
+  DEBUG_printf(FST("ROI_Temp: %.2f | FrmMax: %.2f | Valid: %d | "), data.thermal_roi_max, data.thermal_frame_max, data.thermal_valid);
   DEBUG_printf(FST(" %u |"), data.lc_samples);
   DEBUG_printf(FST("%u\n"), data.sensor_samples);
 }
@@ -240,11 +257,10 @@ void print_stats(const test_data_t& data) {
 void print_csv_results() {
   // Print CSV header
   Serial.println(F("\n\n*** TEST RESULTS CSV DATA ***\n"));
-  Serial.println(F("Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),Temp(°C),MaxTemp(°C),RPM,Efficiency(g/W),Samples"));
-  Serial.println(F("Step,Throttle(%),Thrust(g),Voltage(V),Current(A),Power(W),RPM,Efficiency(g/W),Samples"));
+  Serial.println(F("Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,ROI_Max_Temp(C),Frame_Max_Temp(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples"));
   
   // Print data rows
-  for (int i = 0; i <= total_steps; i++) {
+  for (unsigned int i = 0; i <= total_steps; i++) {
     // Skip rows with no data (where throttle is 0 and samples are 0)
     if (test_data[i].throttle == 0 && 
         test_data[i].lc_samples == 0 && 
@@ -265,25 +281,28 @@ void print_csv_results() {
     Serial.print(F(","));
     Serial.print(test_data[i].thrust, 2);
     Serial.print(F(","));
-    //Serial.print(test_data[i].torque, 2);
-    //Serial.print(F(","));
+    Serial.print(test_data[i].torque, 2);
+    Serial.print(F(","));
     Serial.print(test_data[i].voltage, 2);
     Serial.print(F(","));
     Serial.print(test_data[i].current, 3);
     Serial.print(F(","));
     Serial.print(test_data[i].power, 2);
     Serial.print(F(","));
-    //Serial.print(test_data[i].temperature, 2);
-    //Serial.print(F(","));
-    //Serial.print(test_data[i].temperature_max, 2);
-    //tSerial.print(F(","));
     Serial.print(test_data[i].rpm, 0);
+    Serial.print(F(","));
+    Serial.print(test_data[i].thermal_roi_max, 2);
+    Serial.print(F(","));
+    Serial.print(test_data[i].thermal_frame_max, 2);
+    Serial.print(F(","));
+    Serial.print(test_data[i].thermal_valid ? 1 : 0);
     Serial.print(F(","));
     Serial.print(efficiency, 2);
     Serial.print(F(","));
     Serial.print(test_data[i].lc_samples);
-    Serial.println(F("               "));
-
+    Serial.print(F(","));
+    Serial.print(test_data[i].sensor_samples);
+    Serial.println();
   }
   
   Serial.println(F("\n\n*** END OF TEST RESULTS ***"));
@@ -354,7 +373,67 @@ void print_help() {
   Serial.println(F(" p - Print CSV results"));
   Serial.println(F(" 0-9 - Set throttle to 10%%-100%%"));
   Serial.println(F(" a - Enable analog throttle control"));
+  Serial.println(F(" w - Clear stored Wi-Fi credentials"));
   Serial.println(F(" SPACE - Stop motor"));
   Serial.println(F(" h - Print this help message"));
   Serial.println(F("Press 's' to start the test, or 'h' to see this help message."));
+
+  WiFiStatus ws = web_get_wifi_status();
+  Serial.print(F("Wi-Fi: "));
+  switch (ws.mode) {
+    case NET_MODE_STATION:     Serial.print(F("STA ")); break;
+    case NET_MODE_AP_FALLBACK: Serial.print(F("AP  ")); break;
+    case NET_MODE_CONNECTING:  Serial.print(F("... ")); break;
+    default:                    Serial.print(F("OFF ")); break;
+  }
+  Serial.print(ws.ssid);
+  Serial.print(F(" "));
+  Serial.println(ws.ip);
+}
+
+// ----- Command functions callable from serial AND web -----
+
+bool cmd_start_test() {
+  if (current_step >= 0) return false;  // already running
+  if (motor.getState() == MotorESC::STATE_ACCELERATING ||
+      motor.getState() == MotorESC::STATE_DECELERATING) return false;
+  analogThrottle = false;
+  web_throttle_clear();
+  start_test();
+  return true;
+}
+
+bool cmd_abort_test() {
+  if (current_step < 0) return false;
+  abort_test();
+  return true;
+}
+
+void cmd_stop_motor() {
+  analogThrottle = false;
+  web_throttle_clear();
+  if (current_step >= 0) { abort_test(); }
+  else { motor.stop(true, 2000); }
+}
+
+void cmd_set_throttle(float pct) {
+  analogThrottle = false;
+  if (current_step >= 0) { abort_test(); return; }
+  pct = constrain(pct, 0.0f, 100.0f);
+  motor.setThrottle(pct, true, 3000 * abs((motor.getCurrentThrottle() - pct)) / 100.0f);
+}
+
+void cmd_tare() {
+  tare_sensors();
+}
+
+void cmd_web_throttle_timeout() {
+  if (!web_throttle_is_active() && web_throttle_get_value() > 0) {
+    // Heartbeat expired while web throttle was set — ramp to zero
+    DEBUG_println(FST("\n# Web throttle timeout — ramping to zero."));
+    web_throttle_clear();
+    if (current_step < 0) {
+      motor.stop(true, 2000);
+    }
+  }
 }

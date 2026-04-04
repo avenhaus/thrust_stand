@@ -22,12 +22,12 @@ No.| GPIO | IO | RTC | ADC | Default   | Function
 16 |  13  | IO | R14 | 2_4 |           | RPM Input
 13 |  14  | IO | R16 | 2_6 |           | TOUCH_CS
 23 |  15* | IO | R13 | 2_3 |           | LCD_CS
-27 |  16+ | IO |     |     | UART2_RXD | 
-28 |  17+ | IO |     |     | UART2_TXD | 
+27 |  16+ | IO |     |     | UART2_RXD | MLX90640_SDA (I2C1)
+28 |  17+ | IO |     |     | UART2_TXD | MLX90640_SCL (I2C1)
 30 |  18  | IO |     |     | SPI0_SCK  | SCK MAX31855, LCD, Touch, D
 31 |  19  | IO |     |     | SPI0_MISO | MISO MAX31855, Touch, SD
-33 |  21  | IO |     |     | I2C0_SDA  | INA226_SDA / MLX90614
-36 |  22  | IO |     |     | I2C0_SCL  | INA226_SCL / MLX90614
+33 |  21  | IO |     |     | I2C0_SDA  | INA226_SDA
+36 |  22  | IO |     |     | I2C0_SCL  | INA226_SCL
 37 |  23  | IO |     |     | SPI0_MOSI | MOSI LCD, SD
 10 |  25  | IO | R06 | 2_8 |DAC1/I2S-DT| BUTTON START / STOP
 11 |  26  | IO | R07 | 2_9 |DAC2/I2S-WS| Motor ESC PWM
@@ -83,8 +83,6 @@ GPIO_34 - GPIO_39 have no internal pullup / pulldown.
 #define HX711_DOUT_1_PIN 34 // mcu > HX711 no 1 dout pin
 #define HX711_SCK_2_PIN 32 // mcu > HX711 no 2 sck pin
 #define HX711_DOUT_2_PIN 35 // mcu > HX711 no 2 dout pin
-
-#define MAX31855_CS_PIN 27
 
 #define RPM_SENSOR_PIN 13     // GPIO pin connected to the optical sensor
 
@@ -176,6 +174,45 @@ No.| GPIO | IO | RTC | ADC | Default   | Function
 
 
 #define LOOP_DELAY 10
+
+/********************************************\
+|*  MLX90640 Thermal Sensor
+\********************************************/
+#define MLX90640_I2C_ADDR     0x33
+#define MLX90640_I2C_SDA_PIN  16     // Dedicated I2C bus (Wire1) for MLX90640
+#define MLX90640_I2C_SCL_PIN  17
+#define MLX90640_I2C_FREQ     1000000 // 1 MHz FM+ — MLX90640 supports up to 1 MHz
+#define MLX90640_REFRESH_RATE 0x05   // 8 Hz (register value)
+#define THERMAL_COLS          32
+#define THERMAL_ROWS          24
+#define THERMAL_PIXELS        (THERMAL_COLS * THERMAL_ROWS)  // 768
+
+// Default ROI (region of interest) — centered 12x10 block
+#define THERMAL_ROI_X_DEFAULT   10
+#define THERMAL_ROI_Y_DEFAULT   7
+#define THERMAL_ROI_W_DEFAULT   12
+#define THERMAL_ROI_H_DEFAULT   10
+
+// Thermal frame considered stale after this many ms
+#define THERMAL_STALE_MS        2000
+
+/********************************************\
+|*  Wi-Fi Configuration
+\********************************************/
+#define WIFI_AP_PREFIX            "ThrustStand"
+#define WIFI_AP_DEFAULT_PASSWORD  "thruststand"
+#define WIFI_STA_CONNECT_TIMEOUT_MS   10000   // 10 s initial connect window
+#define WIFI_STA_RECONNECT_TIMEOUT_MS 15000   // 15 s runtime reconnect window
+
+/********************************************\
+|*  Web Control
+\********************************************/
+#define WEB_THROTTLE_TIMEOUT_MS  5000    // 5 s heartbeat timeout for manual web throttle
+#define WEB_TELEMETRY_INTERVAL_MS 100    // ~10 Hz telemetry push
+#define WEB_THERMAL_INTERVAL_MS   125    // ~8 Hz thermal frame push
+
+// Heap safety margin — throttle thermal rate if free heap drops below this
+#define HEAP_SAFETY_MARGIN_BYTES  30000
 
 // Programming and debug: connect to UART USB, not OTG
 #define LOGGER Serial

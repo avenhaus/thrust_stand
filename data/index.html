@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Thrust Stand</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a2e;color:#e0e0e0;font-size:14px}
+h2{font-size:1rem;margin-bottom:8px;color:#00d4ff}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px;max-width:1000px;margin:0 auto}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+.panel{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:12px}
+.panel.full{grid-column:1/-1}
+.val{font-weight:700;color:#fff}
+.row{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #0f3460}
+.row:last-child{border:none}
+.lbl{color:#8a8a9a}
+button{background:#0f3460;color:#e0e0e0;border:1px solid #00d4ff;border-radius:4px;padding:6px 14px;cursor:pointer;font-size:13px}
+button:hover{background:#1a4a80}
+button:disabled{opacity:.4;cursor:default}
+button.danger{border-color:#ff4444;color:#ff4444}
+button.danger:hover{background:#441414}
+.btn-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+input[type=text],input[type=password]{background:#0d1b36;border:1px solid #0f3460;color:#e0e0e0;padding:4px 8px;border-radius:4px;width:100%}
+input[type=range]{width:100%;accent-color:#00d4ff}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.status-ok{background:#00ff88}
+.status-warn{background:#ffaa00}
+.status-err{background:#ff4444}
+canvas{image-rendering:pixelated;border:1px solid #0f3460;border-radius:4px;width:100%;aspect-ratio:4/3;display:block;cursor:crosshair}
+.temp-legend{display:flex;justify-content:space-between;font-size:11px;margin-top:4px}
+.collapsible summary{cursor:pointer;color:#00d4ff;font-size:.9rem;padding:4px 0}
+table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
+th,td{padding:3px 6px;text-align:right;border-bottom:1px solid #0f3460}
+th{color:#00d4ff;position:sticky;top:0;background:#16213e}
+.results-scroll{max-height:300px;overflow-y:auto}
+#header{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:#16213e;border-bottom:1px solid #0f3460}
+#header h1{font-size:1.1rem;color:#00d4ff}
+#conn-status{font-size:.8rem}
+</style>
+</head>
+<body>
+<div id="header">
+  <h1>Thrust Stand</h1>
+  <div id="conn-status"><span class="status-dot status-err"></span>Connecting…</div>
+</div>
+
+<div class="grid">
+
+  <!-- Thermal Panel -->
+  <div class="panel">
+    <h2>Thermal Image</h2>
+    <canvas id="thermal-canvas" width="32" height="24"></canvas>
+    <div class="temp-legend">
+      <span id="temp-min">--°C</span>
+      <span>ROI Max: <b id="roi-temp">--</b>°C | Frame Max: <b id="frame-temp">--</b>°C</span>
+      <span id="temp-max">--°C</span>
+    </div>
+    <div style="margin-top:6px;font-size:12px">
+      <span id="thermal-status"><span class="status-dot status-err"></span>No sensor</span>
+      <span id="roi-default-warn" style="color:#ffaa00;margin-left:8px;display:none">⚠ ROI at default position</span>
+    </div>
+    <details class="collapsible" style="margin-top:8px">
+      <summary>ROI Settings</summary>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;margin-top:4px">
+        <label>X <input type="text" id="roi-x" size="3"></label>
+        <label>Y <input type="text" id="roi-y" size="3"></label>
+        <label>W <input type="text" id="roi-w" size="3"></label>
+        <label>H <input type="text" id="roi-h" size="3"></label>
+      </div>
+      <div class="btn-row"><button onclick="setROI()">Apply ROI</button></div>
+    </details>
+  </div>
+
+  <!-- Telemetry Panel -->
+  <div class="panel">
+    <h2>Live Telemetry</h2>
+    <div class="row"><span class="lbl">Motor State</span><span class="val" id="v-state">--</span></div>
+    <div class="row"><span class="lbl">Throttle</span><span class="val" id="v-throttle">--%</span></div>
+    <div class="row"><span class="lbl">Thrust</span><span class="val" id="v-thrust">-- g</span></div>
+    <div class="row"><span class="lbl">Torque</span><span class="val" id="v-torque">-- g·cm</span></div>
+    <div class="row"><span class="lbl">Voltage</span><span class="val" id="v-voltage">-- V</span></div>
+    <div class="row"><span class="lbl">Current</span><span class="val" id="v-current">-- A</span></div>
+    <div class="row"><span class="lbl">Power</span><span class="val" id="v-power">-- W</span></div>
+    <div class="row"><span class="lbl">RPM</span><span class="val" id="v-rpm">--</span></div>
+    <div class="row"><span class="lbl">ROI Temp</span><span class="val" id="v-roi-temp">-- °C</span></div>
+    <div class="row"><span class="lbl">Test</span><span class="val" id="v-test">Idle</span></div>
+    <div class="row"><span class="lbl">Free Heap</span><span class="val" id="v-heap">--</span></div>
+    <div class="row"><span class="lbl">Network</span><span class="val" id="v-network">--</span></div>
+  </div>
+
+  <!-- Test Control Panel -->
+  <div class="panel">
+    <h2>Test Control</h2>
+    <div class="btn-row">
+      <button id="btn-start" onclick="apiPost('/api/test/start')">Start Test</button>
+      <button id="btn-abort" onclick="apiPost('/api/test/abort')" disabled>Abort Test</button>
+      <button class="danger" onclick="apiPost('/api/motor/stop')">STOP Motor</button>
+      <button onclick="apiPost('/api/sensors/tare')">Tare Sensors</button>
+    </div>
+    <div style="margin-top:12px">
+      <label style="display:flex;align-items:center;gap:8px">
+        Manual Throttle: <b id="slider-val">0</b>%
+      </label>
+      <input type="range" id="throttle-slider" min="0" max="100" value="0" oninput="onThrottleSlider(this.value)">
+      <div class="btn-row">
+        <button id="btn-apply-throttle" onclick="applyThrottle()">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test Results Panel -->
+  <div class="panel">
+    <h2>Test Results</h2>
+    <div class="btn-row" style="margin-bottom:6px">
+      <button onclick="fetchResults()">Refresh</button>
+      <button onclick="downloadCSV()">Download CSV</button>
+    </div>
+    <div class="results-scroll">
+      <table>
+        <thead><tr>
+          <th>Step</th><th>Thr%</th><th>Thrust</th><th>Torque</th><th>V</th><th>A</th><th>W</th>
+          <th>RPM</th><th>ROI°C</th><th>Eff</th>
+        </tr></thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Network Settings Panel -->
+  <div class="panel full">
+    <details class="collapsible">
+      <summary>Network Settings</summary>
+      <div style="margin-top:8px">
+        <div class="row"><span class="lbl">Mode</span><span class="val" id="wifi-mode">--</span></div>
+        <div class="row"><span class="lbl">SSID</span><span class="val" id="wifi-ssid">--</span></div>
+        <div class="row"><span class="lbl">IP</span><span class="val" id="wifi-ip">--</span></div>
+        <div class="row"><span class="lbl">Last Error</span><span class="val" id="wifi-fail">--</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+          <label>SSID <input type="text" id="new-ssid"></label>
+          <label>Password <input type="password" id="new-pass"></label>
+        </div>
+        <div class="btn-row">
+          <button onclick="saveWiFi()">Save &amp; Reconnect</button>
+          <button class="danger" onclick="clearWiFi()">Clear Credentials</button>
+        </div>
+      </div>
+    </details>
+  </div>
+</div>
+
+<script>
+// --- WebSocket ---
+let ws = null;
+let wsReconnectTimer = null;
+let heartbeatTimer = null;
+let throttleActive = false;
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    document.getElementById('conn-status').innerHTML = '<span class="status-dot status-ok"></span>Connected';
+    fetchWiFiStatus();
+    fetchROI();
+  };
+
+  ws.onclose = () => {
+    document.getElementById('conn-status').innerHTML = '<span class="status-dot status-err"></span>Disconnected';
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+    wsReconnectTimer = setTimeout(connectWS, 2000);
+  };
+
+  ws.onmessage = (evt) => {
+    if (typeof evt.data === 'string') {
+      handleTelemetry(JSON.parse(evt.data));
+    } else {
+      handleThermalFrame(evt.data);
+    }
+  };
+}
+
+function handleTelemetry(d) {
+  if (d.type !== 'telemetry') return;
+  document.getElementById('v-state').textContent = d.motorState;
+  document.getElementById('v-throttle').textContent = d.throttle.toFixed(1) + '%';
+  document.getElementById('v-thrust').textContent = d.thrust.toFixed(1) + ' g';
+  document.getElementById('v-torque').textContent = d.torque.toFixed(1) + ' g·cm';
+  document.getElementById('v-voltage').textContent = d.voltage.toFixed(2) + ' V';
+  document.getElementById('v-current').textContent = d.current.toFixed(3) + ' A';
+  document.getElementById('v-power').textContent = d.power.toFixed(2) + ' W';
+  document.getElementById('v-rpm').textContent = Math.round(d.rpm);
+  document.getElementById('v-roi-temp').textContent = d.roiMaxTemp.toFixed(1) + ' °C';
+  document.getElementById('v-heap').textContent = d.freeHeap;
+  document.getElementById('roi-temp').textContent = d.roiMaxTemp.toFixed(1);
+  document.getElementById('frame-temp').textContent = d.frameMaxTemp.toFixed(1);
+
+  const testRunning = d.testRunning;
+  document.getElementById('v-test').textContent = testRunning 
+    ? `Step ${d.currentStep} / ${d.totalSteps}` : 'Idle';
+  document.getElementById('btn-start').disabled = testRunning;
+  document.getElementById('btn-abort').disabled = !testRunning;
+
+  const ts = document.getElementById('thermal-status');
+  if (d.thermalOk) {
+    ts.innerHTML = '<span class="status-dot status-ok"></span>Streaming';
+  } else {
+    ts.innerHTML = '<span class="status-dot status-warn"></span>Stale / No data';
+  }
+}
+
+// --- Thermal rendering ---
+const ironbow = [
+  [0,0,0],[0,0,36],[0,0,51],[0,0,66],[0,0,81],[2,0,90],[4,0,99],[7,0,106],
+  [11,0,115],[14,0,119],[20,0,123],[27,0,128],[33,0,133],[41,0,137],[48,0,141],
+  [55,0,144],[61,0,146],[66,0,149],[72,0,150],[78,0,151],[84,0,152],[91,0,153],
+  [97,0,155],[104,0,155],[110,0,156],[115,0,157],[122,0,157],[128,0,157],[134,0,157],
+  [139,0,157],[146,0,156],[152,0,155],[157,0,155],[162,0,155],[167,0,154],[171,0,153],
+  [175,1,152],[178,1,151],[182,2,149],[185,4,149],[188,5,147],[191,6,146],[193,8,144],
+  [195,11,142],[198,13,141],[201,17,139],[203,20,137],[205,23,135],[208,26,133],
+  [210,29,131],[212,33,129],[214,37,127],[217,40,125],[219,43,123],[221,47,121],
+  [223,51,118],[224,54,116],[226,57,114],[228,60,112],[230,64,110],[232,67,108],
+  [233,69,106],[234,72,104],[235,75,102],[236,78,99],[238,81,97],[239,84,95],
+  [240,87,93],[240,90,91],[241,93,89],[242,96,87],[243,99,84],[244,102,82],
+  [244,104,80],[245,107,78],[246,110,76],[247,113,73],[247,116,71],[248,119,69],
+  [249,122,67],[249,125,65],[250,128,63],[250,130,61],[251,133,59],[251,136,57],
+  [252,139,55],[252,142,54],[253,144,52],[253,146,50],[253,148,49],[254,151,47],
+  [254,153,46],[254,155,44],[254,157,43],[254,159,42],[254,161,40],[254,163,39],
+  [254,165,38],[254,167,37],[254,169,36],[254,170,35],[254,172,34],[254,174,33],
+  [254,176,32],[254,178,32],[254,180,31],[254,182,31],[254,183,30],[254,185,30],
+  [254,187,30],[254,188,30],[254,190,30],[254,191,30],[254,193,31],[254,194,31],
+  [254,196,32],[254,197,33],[254,199,34],[254,200,35],[254,202,36],[254,203,38],
+  [254,204,40],[254,206,41],[254,207,43],[254,208,45],[254,209,47],[254,211,50],
+  [254,212,52],[254,213,55],[254,214,57],[254,215,60],[254,216,62],[254,217,65],
+  [254,218,68],[254,219,71],[254,219,74],[254,220,77],[254,221,80],[254,222,83],
+  [254,222,87],[254,223,90],[254,224,93],[254,224,97],[254,225,100],[254,225,104],
+  [255,226,107],[255,226,111],[255,227,115],[255,227,118],[255,228,122],[255,228,126],
+  [255,229,130],[255,229,133],[255,229,137],[255,230,141],[255,230,145],[255,231,149],
+  [255,231,153],[255,231,157],[255,232,161],[255,232,165],[255,232,169],[255,233,173],
+  [255,233,177],[255,233,181],[255,234,185],[255,234,189],[255,234,194],[255,234,198],
+  [255,235,202],[255,235,206],[255,235,210],[255,236,214],[255,236,218],[255,236,222],
+  [255,237,226],[255,237,231],[255,237,235],[255,238,239],[255,238,243],[255,238,247],
+  [255,239,251],[255,239,255],[255,240,255],[255,240,255],[255,241,255],[255,241,255],
+  [255,242,255],[255,243,255],[255,244,255],[255,245,255],[255,246,255],[255,248,255],
+  [255,249,255],[255,250,255],[255,251,255],[255,252,255],[255,253,255],[255,255,255]
+];
+
+const canvas = document.getElementById('thermal-canvas');
+const ctx = canvas.getContext('2d');
+let currentROI = {x:10,y:7,w:12,h:10};
+let lastFrameData = null;
+
+function handleThermalFrame(buf) {
+  const bytes = new Uint8Array(buf);
+  // Check header "THRM"
+  if (bytes.length < 4 || bytes[0]!==84||bytes[1]!==72||bytes[2]!==82||bytes[3]!==77) return;
+
+  const view = new DataView(buf, 4);
+  const temps = new Float32Array(768);
+  let min = 999, max = -999;
+  for (let i = 0; i < 768; i++) {
+    temps[i] = view.getInt16(i*2, true) / 100.0;
+    if (temps[i] < min) min = temps[i];
+    if (temps[i] > max) max = temps[i];
+  }
+  lastFrameData = temps;
+
+  document.getElementById('temp-min').textContent = min.toFixed(1) + '°C';
+  document.getElementById('temp-max').textContent = max.toFixed(1) + '°C';
+
+  // Render to canvas
+  const imgData = ctx.createImageData(32, 24);
+  const range = max - min || 1;
+  for (let i = 0; i < 768; i++) {
+    const norm = Math.max(0, Math.min(1, (temps[i] - min) / range));
+    const ci = Math.round(norm * (ironbow.length - 1));
+    const [r,g,b] = ironbow[ci];
+    imgData.data[i*4]   = r;
+    imgData.data[i*4+1] = g;
+    imgData.data[i*4+2] = b;
+    imgData.data[i*4+3] = 255;
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  // Draw ROI overlay
+  ctx.strokeStyle = '#00ff88';
+  ctx.lineWidth = 0.5;
+  ctx.strokeRect(currentROI.x, currentROI.y, currentROI.w, currentROI.h);
+}
+
+// --- ROI ---
+function fetchROI() {
+  fetch('/api/thermal/roi').then(r=>r.json()).then(d => {
+    currentROI = {x:d.x, y:d.y, w:d.w, h:d.h};
+    document.getElementById('roi-x').value = d.x;
+    document.getElementById('roi-y').value = d.y;
+    document.getElementById('roi-w').value = d.w;
+    document.getElementById('roi-h').value = d.h;
+    document.getElementById('roi-default-warn').style.display = d.isDefault ? '' : 'none';
+  }).catch(()=>{});
+}
+
+function setROI() {
+  const body = new URLSearchParams({
+    x: document.getElementById('roi-x').value,
+    y: document.getElementById('roi-y').value,
+    w: document.getElementById('roi-w').value,
+    h: document.getElementById('roi-h').value
+  });
+  fetch('/api/thermal/roi', {method:'POST', body}).then(r=>r.json()).then(d => {
+    if (d.ok) fetchROI();
+    else alert(d.error || 'Failed');
+  });
+}
+
+// --- Canvas ROI drag ---
+let roiDragging = false, roiStart = null;
+canvas.addEventListener('mousedown', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const sx = (e.clientX - rect.left) / rect.width * 32;
+  const sy = (e.clientY - rect.top) / rect.height * 24;
+  roiStart = {x: Math.floor(sx), y: Math.floor(sy)};
+  roiDragging = true;
+});
+canvas.addEventListener('mousemove', (e) => {
+  if (!roiDragging) return;
+  const rect = canvas.getBoundingClientRect();
+  const ex = Math.floor((e.clientX - rect.left) / rect.width * 32);
+  const ey = Math.floor((e.clientY - rect.top) / rect.height * 24);
+  const x = Math.max(0, Math.min(roiStart.x, ex));
+  const y = Math.max(0, Math.min(roiStart.y, ey));
+  const w = Math.min(32 - x, Math.abs(ex - roiStart.x) + 1);
+  const h = Math.min(24 - y, Math.abs(ey - roiStart.y) + 1);
+  currentROI = {x, y, w, h};
+  document.getElementById('roi-x').value = x;
+  document.getElementById('roi-y').value = y;
+  document.getElementById('roi-w').value = w;
+  document.getElementById('roi-h').value = h;
+});
+canvas.addEventListener('mouseup', () => {
+  if (roiDragging && currentROI.w > 1 && currentROI.h > 1) {
+    setROI();
+  }
+  roiDragging = false;
+});
+
+// --- API helpers ---
+function apiPost(url) {
+  fetch(url, {method:'POST'}).then(r=>r.json()).then(d => {
+    if (!d.ok && d.error) console.warn(d.error);
+  }).catch(console.error);
+}
+
+// --- Throttle slider ---
+function onThrottleSlider(v) {
+  document.getElementById('slider-val').textContent = v;
+}
+
+function applyThrottle() {
+  const val = document.getElementById('throttle-slider').value;
+  const body = new URLSearchParams({value: val});
+  fetch('/api/motor/throttle', {method:'POST', body}).then(r=>r.json()).then(d => {
+    if (d.ok) {
+      throttleActive = true;
+      if (!heartbeatTimer) {
+        heartbeatTimer = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({cmd:'heartbeat'}));
+          }
+        }, 2000);
+      }
+    }
+  });
+}
+
+// --- Test results ---
+function fetchResults() {
+  fetch('/api/test/results').then(r=>r.json()).then(d => {
+    const tbody = document.getElementById('results-body');
+    tbody.innerHTML = '';
+    (d.steps || []).forEach(s => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${s.step}</td><td>${s.throttle.toFixed(1)}</td><td>${s.thrust.toFixed(1)}</td>` +
+        `<td>${s.torque.toFixed(1)}</td><td>${s.voltage.toFixed(1)}</td><td>${s.current.toFixed(2)}</td>` +
+        `<td>${s.power.toFixed(1)}</td><td>${Math.round(s.rpm)}</td><td>${s.roiMaxTemp.toFixed(1)}</td>` +
+        `<td>${s.efficiency.toFixed(2)}</td>`;
+      tbody.appendChild(tr);
+    });
+  });
+}
+
+function downloadCSV() {
+  window.open('/api/test/csv', '_blank');
+}
+
+// --- WiFi ---
+function fetchWiFiStatus() {
+  fetch('/api/wifi/status').then(r=>r.json()).then(d => {
+    document.getElementById('wifi-mode').textContent = d.mode;
+    document.getElementById('wifi-ssid').textContent = d.ssid || '--';
+    document.getElementById('wifi-ip').textContent = d.ip || '--';
+    document.getElementById('wifi-fail').textContent = d.failReason || '--';
+    document.getElementById('v-network').textContent = `${d.mode} ${d.ip || ''}`;
+  }).catch(()=>{});
+}
+
+function saveWiFi() {
+  const ssid = document.getElementById('new-ssid').value.trim();
+  const pass = document.getElementById('new-pass').value;
+  if (!ssid) { alert('SSID cannot be empty'); return; }
+  if (pass && pass.length < 8) { alert('Password must be empty or at least 8 characters'); return; }
+  const body = new URLSearchParams({ssid, pass});
+  fetch('/api/wifi/credentials', {method:'POST', body}).then(r=>r.json()).then(d => {
+    alert(d.message || (d.ok ? 'Saved' : d.error));
+  });
+}
+
+function clearWiFi() {
+  if (!confirm('Clear stored Wi-Fi credentials? Device will enter AP mode on next reboot.')) return;
+  fetch('/api/wifi/clear', {method:'POST'}).then(r=>r.json()).then(d => {
+    alert(d.message || 'Done');
+  });
+}
+
+// --- Init ---
+connectWS();
+setInterval(fetchWiFiStatus, 10000);
+</script>
+</body>
+</html>
