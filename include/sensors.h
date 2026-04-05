@@ -10,8 +10,7 @@ typedef struct {
     float current;           // Current from INA226
     float power;             // Power from INA226
     float rpm;               // Current RPM value    
-    float thermal_roi_max;   // Max temperature inside ROI (°C)
-    float thermal_frame_max; // Max temperature across entire frame (°C)
+    float thermal_max;       // Max temperature from thermal sensor (°C)
     bool  thermal_valid;     // True if thermal data was from a fresh frame
     unsigned int lc_samples; // Number of load cell samples
     unsigned int sensor_samples; // Number of other sensor samples

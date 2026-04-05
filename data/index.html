@@ -54,23 +54,12 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
     <canvas id="thermal-canvas" width="32" height="24"></canvas>
     <div class="temp-legend">
       <span id="temp-min">--°C</span>
-      <span>ROI Max: <b id="roi-temp">--</b>°C | Frame Max: <b id="frame-temp">--</b>°C</span>
+      <span>Max: <b id="thermal-max">--</b>°C</span>
       <span id="temp-max">--°C</span>
     </div>
     <div style="margin-top:6px;font-size:12px">
       <span id="thermal-status"><span class="status-dot status-err"></span>No sensor</span>
-      <span id="roi-default-warn" style="color:#ffaa00;margin-left:8px;display:none">⚠ ROI at default position</span>
     </div>
-    <details class="collapsible" style="margin-top:8px">
-      <summary>ROI Settings</summary>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;margin-top:4px">
-        <label>X <input type="text" id="roi-x" size="3"></label>
-        <label>Y <input type="text" id="roi-y" size="3"></label>
-        <label>W <input type="text" id="roi-w" size="3"></label>
-        <label>H <input type="text" id="roi-h" size="3"></label>
-      </div>
-      <div class="btn-row"><button onclick="setROI()">Apply ROI</button></div>
-    </details>
   </div>
 
   <!-- Telemetry Panel -->
@@ -84,7 +73,7 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
     <div class="row"><span class="lbl">Current</span><span class="val" id="v-current">-- A</span></div>
     <div class="row"><span class="lbl">Power</span><span class="val" id="v-power">-- W</span></div>
     <div class="row"><span class="lbl">RPM</span><span class="val" id="v-rpm">--</span></div>
-    <div class="row"><span class="lbl">ROI Temp</span><span class="val" id="v-roi-temp">-- °C</span></div>
+    <div class="row"><span class="lbl">Thermal Max</span><span class="val" id="v-thermal-max">-- °C</span></div>
     <div class="row"><span class="lbl">Test</span><span class="val" id="v-test">Idle</span></div>
     <div class="row"><span class="lbl">Free Heap</span><span class="val" id="v-heap">--</span></div>
     <div class="row"><span class="lbl">Network</span><span class="val" id="v-network">--</span></div>
@@ -121,7 +110,7 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
       <table>
         <thead><tr>
           <th>Step</th><th>Thr%</th><th>Thrust</th><th>Torque</th><th>V</th><th>A</th><th>W</th>
-          <th>RPM</th><th>ROI°C</th><th>Eff</th>
+          <th>RPM</th><th>Thermal°C</th><th>Eff</th>
         </tr></thead>
         <tbody id="results-body"></tbody>
       </table>
@@ -165,7 +154,6 @@ function connectWS() {
   ws.onopen = () => {
     document.getElementById('conn-status').innerHTML = '<span class="status-dot status-ok"></span>Connected';
     fetchWiFiStatus();
-    fetchROI();
   };
 
   ws.onclose = () => {
@@ -193,10 +181,9 @@ function handleTelemetry(d) {
   document.getElementById('v-current').textContent = d.current.toFixed(3) + ' A';
   document.getElementById('v-power').textContent = d.power.toFixed(2) + ' W';
   document.getElementById('v-rpm').textContent = Math.round(d.rpm);
-  document.getElementById('v-roi-temp').textContent = d.roiMaxTemp.toFixed(1) + ' °C';
+  document.getElementById('v-thermal-max').textContent = d.thermalMax.toFixed(1) + ' °C';
   document.getElementById('v-heap').textContent = d.freeHeap;
-  document.getElementById('roi-temp').textContent = d.roiMaxTemp.toFixed(1);
-  document.getElementById('frame-temp').textContent = d.frameMaxTemp.toFixed(1);
+  document.getElementById('thermal-max').textContent = d.thermalMax.toFixed(1);
 
   const testRunning = d.testRunning;
   document.getElementById('v-test').textContent = testRunning 
@@ -250,7 +237,6 @@ const ironbow = [
 
 const canvas = document.getElementById('thermal-canvas');
 const ctx = canvas.getContext('2d');
-let currentROI = {x:10,y:7,w:12,h:10};
 let lastFrameData = null;
 
 function handleThermalFrame(buf) {
@@ -284,36 +270,6 @@ function handleThermalFrame(buf) {
     imgData.data[i*4+3] = 255;
   }
   ctx.putImageData(imgData, 0, 0);
-
-  // Draw ROI overlay
-  ctx.strokeStyle = '#00ff88';
-  ctx.lineWidth = 0.5;
-  ctx.strokeRect(currentROI.x, currentROI.y, currentROI.w, currentROI.h);
-}
-
-// --- ROI ---
-function fetchROI() {
-  fetch('/api/thermal/roi').then(r=>r.json()).then(d => {
-    currentROI = {x:d.x, y:d.y, w:d.w, h:d.h};
-    document.getElementById('roi-x').value = d.x;
-    document.getElementById('roi-y').value = d.y;
-    document.getElementById('roi-w').value = d.w;
-    document.getElementById('roi-h').value = d.h;
-    document.getElementById('roi-default-warn').style.display = d.isDefault ? '' : 'none';
-  }).catch(()=>{});
-}
-
-function setROI() {
-  const body = new URLSearchParams({
-    x: document.getElementById('roi-x').value,
-    y: document.getElementById('roi-y').value,
-    w: document.getElementById('roi-w').value,
-    h: document.getElementById('roi-h').value
-  });
-  fetch('/api/thermal/roi', {method:'POST', body}).then(r=>r.json()).then(d => {
-    if (d.ok) fetchROI();
-    else alert(d.error || 'Failed');
-  });
 }
 
 // --- Canvas ROI drag ---
@@ -385,7 +341,7 @@ function fetchResults() {
       const tr = document.createElement('tr');
       tr.innerHTML = `<td>${s.step}</td><td>${s.throttle.toFixed(1)}</td><td>${s.thrust.toFixed(1)}</td>` +
         `<td>${s.torque.toFixed(1)}</td><td>${s.voltage.toFixed(1)}</td><td>${s.current.toFixed(2)}</td>` +
-        `<td>${s.power.toFixed(1)}</td><td>${Math.round(s.rpm)}</td><td>${s.roiMaxTemp.toFixed(1)}</td>` +
+        `<td>${s.power.toFixed(1)}</td><td>${Math.round(s.rpm)}</td><td>${s.thermalMax.toFixed(1)}</td>` +
         `<td>${s.efficiency.toFixed(2)}</td>`;
       tbody.appendChild(tr);
     });

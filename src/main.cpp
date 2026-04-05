@@ -145,9 +145,7 @@ void loop() {
       Serial.print(power);
       Serial.print(" | RPM: ");
       Serial.print(rpm);
-      Serial.print(" | ROI: ");
-      Serial.print(thermal_get_roi_max(), 1);
-      Serial.print("C | Frm: ");
+      Serial.print(" | Thermal: ");
       Serial.print(thermal_get_frame_max(), 1);
       Serial.print("C | Pot: ");
       Serial.print(poti_value);
@@ -249,7 +247,7 @@ void print_stats(const test_data_t& data) {
     }
   DEBUG_printf(FST("Power: %.2f | "), data.power);
   DEBUG_printf(FST("RPM: %d | "), (uint32_t)data.rpm);
-  DEBUG_printf(FST("ROI_Temp: %.2f | FrmMax: %.2f | Valid: %d | "), data.thermal_roi_max, data.thermal_frame_max, data.thermal_valid);
+  DEBUG_printf(FST("Thermal: %.2f | Valid: %d | "), data.thermal_max, data.thermal_valid);
   DEBUG_printf(FST(" %u |"), data.lc_samples);
   DEBUG_printf(FST("%u\n"), data.sensor_samples);
 }
@@ -257,7 +255,7 @@ void print_stats(const test_data_t& data) {
 void print_csv_results() {
   // Print CSV header
   Serial.println(F("\n\n*** TEST RESULTS CSV DATA ***\n"));
-  Serial.println(F("Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,ROI_Max_Temp(C),Frame_Max_Temp(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples"));
+  Serial.println(F("Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples"));
   
   // Print data rows
   for (unsigned int i = 0; i <= total_steps; i++) {
@@ -291,9 +289,7 @@ void print_csv_results() {
     Serial.print(F(","));
     Serial.print(test_data[i].rpm, 0);
     Serial.print(F(","));
-    Serial.print(test_data[i].thermal_roi_max, 2);
-    Serial.print(F(","));
-    Serial.print(test_data[i].thermal_frame_max, 2);
+    Serial.print(test_data[i].thermal_max, 2);
     Serial.print(F(","));
     Serial.print(test_data[i].thermal_valid ? 1 : 0);
     Serial.print(F(","));

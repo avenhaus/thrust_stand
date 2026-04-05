@@ -123,20 +123,10 @@ The thermal feature must report a motor temperature metric that is useful and st
 
 The firmware must:
 
-- compute a max temperature for a configurable target region of interest, not only the entire frame
-- expose current ROI max temperature and frame-wide max temperature separately if both are available
-- preserve the latest max motor temperature during a test step for display and logging
-- make the thermal target region visible on the web page
-
-The implementation must also define an operator workflow for ROI handling:
-
-- provide a default ROI so the system can boot into a known state
-- allow the operator to adjust the ROI from the web page during aiming
-- expose the active ROI coordinates through the browser API
-- persist the chosen ROI across reboots using ESP32 Preferences/NVS (the same storage backend used for Wi-Fi credentials)
-- clearly indicate when the ROI is still using a default or unverified placement
-
-This matters because the hottest pixel in the frame may be outside the motor if the sensor is mis-aimed or if another hot object enters the scene.
+- compute the maximum temperature across the entire thermal frame
+- expose current frame maximum temperature
+- preserve the latest maximum motor temperature during a test step for display and logging
+- provide a clear and stable indication of motor hotspot temperature
 
 ### 4. Thermal Aiming View
 
@@ -145,8 +135,7 @@ The web page must show a scaled-up live thermal image that:
 - is visually large enough to aim the sensor by eye
 - updates often enough to be useful for positioning
 - includes a visible color map or contrast range
-- shows the current target ROI overlay
-- identifies the hottest relevant motor region or value clearly
+- identifies the hottest region clearly
 
 The aiming view does not need to behave like smooth video. A lower but stable update rate is acceptable.
 
@@ -183,7 +172,7 @@ The web page must display current live values for at least:
 - current
 - power
 - RPM
-- thermal ROI max temperature
+- thermal maximum temperature
 - current test step and total steps
 
 The page should also surface whether thermal streaming is healthy or stale.
@@ -202,9 +191,9 @@ The firmware must expose:
 
 Thermal metrics must be part of the result model, not only the live view. At minimum the implementation must expose:
 
-- current ROI max temperature in live telemetry
-- per-step ROI max temperature for completed test steps
-- final run max ROI temperature
+- current maximum temperature in live telemetry
+- per-step maximum temperature for completed test steps
+- final run maximum temperature
 - clear indication of whether a thermal value came from a valid frame or stale data
 
 ## Web Architecture Requirements
@@ -294,9 +283,7 @@ The web page must include these areas:
 
 - scaled thermal image
 - current palette or range information
-- ROI overlay for motor target area
-- current ROI max temperature
-- frame-wide max temperature, if available
+- current maximum temperature
 - thermal stream status
 
 ### 2. Live Telemetry Panel
@@ -306,7 +293,7 @@ The web page must include these areas:
 - thrust and torque
 - voltage, current, and power
 - RPM
-- thermal max temperature
+- thermal maximum temperature
 - compact network status indicator (mode and IP)
 
 ### 3. Test Control Panel
@@ -346,7 +333,6 @@ The exact endpoint names may differ, but the browser-accessible interface must c
 - fetch current status snapshot
 - fetch or subscribe to live telemetry
 - fetch or subscribe to latest thermal frame
-- fetch and update ROI configuration
 - start test
 - abort test
 - stop motor
@@ -440,7 +426,6 @@ The system must detect and report at least these conditions:
 - browser not connected
 - test command rejected due to invalid current state
 - manual web throttle timeout or disconnect fallback activation
-- ROI unset, defaulted, or invalid for meaningful motor temperature tracking
 
 The firmware should report failures in a way that is usable both from serial and from the web UI.
 
@@ -463,16 +448,16 @@ The task is complete only when all of the following are true:
 2. The firmware boots safely and the existing motor-control behavior still works without requiring the browser UI.
 3. The MLX90640 initializes successfully when connected and fails gracefully when absent.
 4. The browser can display a scaled live thermal image that is good enough to help aim the sensor at the motor.
-5. The firmware reports a max motor temperature derived from a defined ROI or equivalent motor-target region.
-6. The browser can show and update the active ROI, and the implementation makes it clear when the ROI is still at a default or unverified position.
+5. The firmware reports a maximum motor temperature derived from the entire thermal frame.
+6. The browser can display live thermal frames with the current maximum temperature clearly visible.
 7. The browser can start, abort, stop, and monitor a motor test without bypassing existing safety logic.
-8. Live browser telemetry includes motor state, throttle, key test values, and thermal ROI max temperature.
+8. Live browser telemetry includes motor state, throttle, key test values, and thermal maximum temperature.
 9. Loss of browser connection or temporary Wi-Fi instability does not break a running test or leave the motor in an unsafe state, and manual web throttle falls back according to the documented timeout policy.
 10. The firmware boots into AP provisioning mode when no Wi-Fi credentials are stored, attempts station mode when credentials exist, and latches into AP fallback after a bounded failed connect window without oscillating between modes.
 11. Wi-Fi credentials can be entered, saved to NVM, and used on reboot to reconnect in station mode without operator re-entry.
 12. Thermal metrics are available both live and in test-result data for completed steps and final run summary.
 13. The added thermal and web features do not introduce unacceptable loop blocking or obvious memory instability.
-14. Documentation matches the implemented browser workflow, network provisioning, ROI behavior, disconnect behavior, thermal behavior, and limitations.
+14. Documentation matches the implemented browser workflow, network provisioning, thermal behavior, disconnect behavior, and limitations.
 
 ## Suggested File-Level Approach
 
@@ -531,9 +516,7 @@ The implementing agent should watch closely for:
 - thermal frame reads that block other time-sensitive work (mitigated by dedicated I2C bus)
 - Wi-Fi or web serving load affecting motor responsiveness
 - heap pressure from web assets, frame buffers, and live updates
-- incorrect temperature reporting caused by using frame-wide max instead of motor ROI max
 - mismatched command behavior between serial and browser control paths
-- stale or default ROI being mistaken for a validated motor target
 - browser disconnect leaving manual control state ambiguous if timeout behavior is not implemented cleanly
 - mode flapping between station retries and AP fallback under marginal Wi-Fi if the latched fallback policy is not enforced
 - NVM wear from frequent credential writes if the provisioning UI does not debounce or validate before persisting

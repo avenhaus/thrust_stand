@@ -187,12 +187,6 @@ No.| GPIO | IO | RTC | ADC | Default   | Function
 #define THERMAL_ROWS          24
 #define THERMAL_PIXELS        (THERMAL_COLS * THERMAL_ROWS)  // 768
 
-// Default ROI (region of interest) — centered 12x10 block
-#define THERMAL_ROI_X_DEFAULT   10
-#define THERMAL_ROI_Y_DEFAULT   7
-#define THERMAL_ROI_W_DEFAULT   12
-#define THERMAL_ROI_H_DEFAULT   10
-
 // Thermal frame considered stale after this many ms
 #define THERMAL_STALE_MS        2000
 

@@ -13,8 +13,8 @@ The current firmware targets the `lolin32` PlatformIO environment and is built w
 - Reads bus voltage, current, and electrical power with an INA226
 - Measures RPM using an optical sensor input
 - Reads a 32×24 thermal image from an MLX90640 sensor for motor temperature monitoring
-- Computes max temperature from a configurable region of interest (ROI)
-- Hosts a browser-accessible web UI for thermal aiming, live telemetry, and test control
+- Computes max temperatu from the full thermal frame
+- Hosts a browser-accessible web UI for thermal display, live telemetry, and test control
 - Supports Wi-Fi station mode with automatic AP fallback for provisioning
 - Supports manual throttle control, analog throttle control, and automated stepped test runs
 - Prints live telemetry and CSV output for later analysis
@@ -125,7 +125,7 @@ While running, the serial port continuously updates a single status line with fi
 - Thrust and torque
 - Voltage, current, and power
 - RPM
-- Thermal ROI max temperature and frame max temperature
+- Thermal maximum temperature
 - Potentiometer value
 - Free heap memory
 
@@ -140,7 +140,7 @@ After a completed or aborted test, the firmware prints a CSV block headed by:
 The current row format is:
 
 ```text
-Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,ROI_Max_Temp(C),Frame_Max_Temp(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples
+Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples
 ```
 
 This output is intended to be copied into a spreadsheet or analysis script.
@@ -222,8 +222,8 @@ If station connection fails within 10 seconds, the firmware latches into AP fall
 
 The browser UI is a single-page app served from LittleFS at the root URL. It provides:
 
-- **Thermal Panel** — Scaled-up live heatmap from the MLX90640 (32×24 pixels rendered via HTML5 Canvas with an ironbow palette). Includes a draggable ROI overlay to target the motor area, and displays ROI max and frame max temperatures.
-- **Telemetry Panel** — Live values for throttle, motor state, thrust, torque, voltage, current, power, RPM, and thermal temperature, updated at ~10 Hz via WebSocket.
+- **Thermal Panel** — Scaled-up live heatmap from the MLX90640 (32×24 pixels rendered via HTML5 Canvas with an ironbow palette), displaying the frame maximum temperature.
+- **Telemetry Panel** — Live values for throttle, motor state, thrust, torque, voltage, current, power, RPM, and thermal maximum temperature, updated at ~10 Hz via WebSocket.
 - **Test Control Panel** — Start, abort, and stop buttons, plus a manual throttle slider with heartbeat-backed safety timeout.
 - **Test Results Panel** — Table of completed test step data with CSV download.
 - **Network Settings Panel** — View current Wi-Fi mode and IP, enter new credentials, or clear stored credentials.
@@ -231,10 +231,6 @@ The browser UI is a single-page app served from LittleFS at the root URL. It pro
 ### Web Throttle Safety
 
 Manual throttle control from the browser uses a heartbeat mechanism. If the browser disconnects or stops sending heartbeats for 5 seconds, the firmware automatically ramps the motor to zero.
-
-### ROI (Region of Interest)
-
-The thermal ROI defines which pixels of the thermal frame are used to compute motor temperature. It can be adjusted by dragging on the thermal image in the web UI. The ROI is persisted in NVS across reboots. The UI warns when the ROI is still at its default position.
 
 ### API Endpoints
 
@@ -248,8 +244,6 @@ The thermal ROI defines which pixels of the thermal frame are used to compute mo
 | POST | `/api/sensors/tare` | Tare load cells |
 | GET | `/api/test/results` | JSON test results |
 | GET | `/api/test/csv` | CSV download |
-| GET | `/api/thermal/roi` | Get current ROI |
-| POST | `/api/thermal/roi` | Set ROI (params: `x`, `y`, `w`, `h`) |
 | GET | `/api/wifi/status` | Wi-Fi status |
 | POST | `/api/wifi/credentials` | Save Wi-Fi credentials (params: `ssid`, `pass`) |
 | POST | `/api/wifi/clear` | Clear stored credentials |

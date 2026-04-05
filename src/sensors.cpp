@@ -41,8 +41,7 @@ float current_sum = 0.0; // Sum of current readings
 float power_sum = 0.0; // Sum of power readings
 
 // Thermal tracking for test steps
-float thermal_roi_max_step = 0.0f;   // Max ROI temp seen during this step
-float thermal_frame_max_step = 0.0f; // Max frame temp seen during this step
+float thermal_max_step = 0.0f;   // Max temperature seen during this step
 bool  thermal_had_valid_frame = false; // Did we get at least one valid frame this step?
 
 RpmSensor rpm_sensor; // RPM sensor instance
@@ -138,13 +137,11 @@ bool run_sensors(bool update_stats) {
     current_sum += current; // Add the current value to the sum
     power_sum += power; // Add the current power value to the sum
 
-    // Track thermal max temperatures per step
+    // Track thermal max temperature per step
     if (thermal_is_available() && thermal_get_frame_age_ms() < THERMAL_STALE_MS) {
       thermal_had_valid_frame = true;
-      float roi = thermal_get_roi_max();
       float frm = thermal_get_frame_max();
-      if (roi > thermal_roi_max_step) thermal_roi_max_step = roi;
-      if (frm > thermal_frame_max_step) thermal_frame_max_step = frm;
+      if (frm > thermal_max_step) thermal_max_step = frm;
     }
   }
 
@@ -223,8 +220,7 @@ void reset_stats() {
     current_sum = 0.0;
     power_sum = 0.0;
 
-    thermal_roi_max_step = 0.0f;
-    thermal_frame_max_step = 0.0f;
+    thermal_max_step = 0.0f;
     thermal_had_valid_frame = false;
 }
 
@@ -260,10 +256,9 @@ void get_stats(test_data_t* data){
         data->power = power;
     }
     
-    // Thermal — store per-step max values
-    data->thermal_roi_max   = thermal_roi_max_step;
-    data->thermal_frame_max = thermal_frame_max_step;
-    data->thermal_valid     = thermal_had_valid_frame;
+    // Thermal — store per-step max value
+    data->thermal_max   = thermal_max_step;
+    data->thermal_valid = thermal_had_valid_frame;
     
     // Add RPM values from the global variables
     data->rpm = rpm_sensor.getRPM();

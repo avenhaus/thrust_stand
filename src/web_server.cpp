@@ -186,10 +186,8 @@ static void _handleStatus(AsyncWebServerRequest* req) {
 
     // Thermal
     doc["thermalAvailable"] = thermal_is_available();
-    doc["thermalRoiMax"]    = thermal_get_roi_max();
-    doc["thermalFrameMax"]  = thermal_get_frame_max();
+    doc["thermalMax"]       = thermal_get_frame_max();
     doc["thermalFrameAge"]  = thermal_get_frame_age_ms();
-    doc["thermalRoiDefault"]= thermal_roi_is_default();
 
     // Heap
     doc["freeHeap"] = ESP.getFreeHeap();
@@ -268,8 +266,7 @@ static void _handleTestResults(AsyncWebServerRequest* req) {
         s["current"]    = test_data[i].current;
         s["power"]      = test_data[i].power;
         s["rpm"]        = test_data[i].rpm;
-        s["roiMaxTemp"]  = test_data[i].thermal_roi_max;
-        s["frameMaxTemp"]= test_data[i].thermal_frame_max;
+        s["thermalMax"] = test_data[i].thermal_max;
         s["thermalValid"]= test_data[i].thermal_valid;
         float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
         s["efficiency"]  = eff;
@@ -282,49 +279,21 @@ static void _handleTestResults(AsyncWebServerRequest* req) {
 }
 
 static void _handleTestCSV(AsyncWebServerRequest* req) {
-    String csv = "Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,ROI_Max_Temp(C),Frame_Max_Temp(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples\n";
+    String csv = "Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples\n";
     for (unsigned int i = 0; i <= total_steps; i++) {
         if (test_data[i].throttle == 0 && test_data[i].lc_samples == 0) continue;
         float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
         char row[256];
         snprintf(row, sizeof(row),
-            "%u,%.2f,%.2f,%.2f,%.2f,%.3f,%.2f,%.0f,%.2f,%.2f,%d,%.2f,%u,%u\n",
+            "%u,%.2f,%.2f,%.2f,%.2f,%.3f,%.2f,%.0f,%.2f,%d,%.2f,%u,%u\n",
             i, test_data[i].throttle, test_data[i].thrust, test_data[i].torque,
             test_data[i].voltage, test_data[i].current, test_data[i].power,
-            test_data[i].rpm, test_data[i].thermal_roi_max, test_data[i].thermal_frame_max,
+            test_data[i].rpm, test_data[i].thermal_max,
             test_data[i].thermal_valid ? 1 : 0, eff,
             test_data[i].lc_samples, test_data[i].sensor_samples);
         csv += row;
     }
     req->send(200, "text/csv", csv);
-}
-
-static void _handleGetROI(AsyncWebServerRequest* req) {
-    ThermalROI roi = thermal_get_roi();
-    char buf[128];
-    snprintf(buf, sizeof(buf),
-        "{\"x\":%u,\"y\":%u,\"w\":%u,\"h\":%u,\"isDefault\":%s}",
-        roi.x, roi.y, roi.w, roi.h,
-        thermal_roi_is_default() ? "true" : "false");
-    req->send(200, "application/json", buf);
-}
-
-static void _handleSetROI(AsyncWebServerRequest* req) {
-    if (!req->hasParam("x", true) || !req->hasParam("y", true) ||
-        !req->hasParam("w", true) || !req->hasParam("h", true)) {
-        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Missing x/y/w/h\"}");
-        return;
-    }
-    uint8_t x = req->getParam("x", true)->value().toInt();
-    uint8_t y = req->getParam("y", true)->value().toInt();
-    uint8_t w = req->getParam("w", true)->value().toInt();
-    uint8_t h = req->getParam("h", true)->value().toInt();
-
-    if (thermal_set_roi(x, y, w, h)) {
-        req->send(200, "application/json", "{\"ok\":true}");
-    } else {
-        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid ROI bounds\"}");
-    }
 }
 
 static void _handleWiFiStatus(AsyncWebServerRequest* req) {
@@ -431,8 +400,7 @@ static void _pushTelemetry() {
     doc["current"]     = current;
     doc["power"]       = power;
     doc["rpm"]         = rpm;
-    doc["roiMaxTemp"]  = thermal_get_roi_max();
-    doc["frameMaxTemp"]= thermal_get_frame_max();
+    doc["thermalMax"]  = thermal_get_frame_max();
     doc["thermalOk"]   = thermal_is_available() && thermal_get_frame_age_ms() < THERMAL_STALE_MS;
 
     doc["testRunning"] = (current_step >= 0);
@@ -483,8 +451,6 @@ void web_init() {
     _server.on("/api/sensors/tare",    HTTP_POST, _handleTare);
     _server.on("/api/test/results",    HTTP_GET,  _handleTestResults);
     _server.on("/api/test/csv",        HTTP_GET,  _handleTestCSV);
-    _server.on("/api/thermal/roi",     HTTP_GET,  _handleGetROI);
-    _server.on("/api/thermal/roi",     HTTP_POST, _handleSetROI);
     _server.on("/api/wifi/status",     HTTP_GET,  _handleWiFiStatus);
     _server.on("/api/wifi/credentials",HTTP_POST, _handleWiFiCredentials);
     _server.on("/api/wifi/clear",      HTTP_POST, _handleWiFiClear);
