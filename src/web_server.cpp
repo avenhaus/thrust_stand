@@ -267,6 +267,7 @@ static void _handleTestResults(AsyncWebServerRequest* req) {
         s["power"]      = test_data[i].power;
         s["rpm"]        = test_data[i].rpm;
         s["thermalMax"] = test_data[i].thermal_max;
+
         s["thermalValid"]= test_data[i].thermal_valid;
         float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
         s["efficiency"]  = eff;
@@ -285,7 +286,7 @@ static void _handleTestCSV(AsyncWebServerRequest* req) {
         float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
         char row[256];
         snprintf(row, sizeof(row),
-            "%u,%.2f,%.2f,%.2f,%.2f,%.3f,%.2f,%.0f,%.2f,%d,%.2f,%u,%u\n",
+            "%u,%.2f,%.2f,%.2f,%.2f,%.3f,%.2f,%.0f,%.2f,%.2f,%d,%.2f,%u,%u\n",
             i, test_data[i].throttle, test_data[i].thrust, test_data[i].torque,
             test_data[i].voltage, test_data[i].current, test_data[i].power,
             test_data[i].rpm, test_data[i].thermal_max,
@@ -400,8 +401,9 @@ static void _pushTelemetry() {
     doc["current"]     = current;
     doc["power"]       = power;
     doc["rpm"]         = rpm;
-    doc["thermalMax"]  = thermal_get_frame_max();
-    doc["thermalOk"]   = thermal_is_available() && thermal_get_frame_age_ms() < THERMAL_STALE_MS;
+    doc["thermalMax"]     = thermal_get_frame_max();
+    doc["thermalAmbient"] = thermal_get_frame_ambient();
+    doc["thermalOk"]      = thermal_is_available() && thermal_get_frame_age_ms() < THERMAL_STALE_MS;
 
     doc["testRunning"] = (current_step >= 0);
     doc["currentStep"] = current_step;

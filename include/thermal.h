@@ -20,3 +20,6 @@ unsigned long thermal_get_frame_age_ms();
 
 // Max temperature across the entire frame
 float thermal_get_frame_max();
+
+// Ambient temperature from the sensor (°C)
+float thermal_get_frame_ambient();

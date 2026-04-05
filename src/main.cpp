@@ -289,6 +289,8 @@ void print_csv_results() {
     Serial.print(F(","));
     Serial.print(test_data[i].thermal_max, 2);
     Serial.print(F(","));
+
+    Serial.print(F(","));
     Serial.print(test_data[i].thermal_valid ? 1 : 0);
     Serial.print(F(","));
     Serial.print(efficiency, 2);

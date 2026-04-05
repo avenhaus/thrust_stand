@@ -43,6 +43,8 @@ float power_sum = 0.0; // Sum of power readings
 // Thermal tracking for test steps
 float thermal_max_step = 0.0f;   // Max temperature seen during this step
 bool  thermal_had_valid_frame = false; // Did we get at least one valid frame this step?
+float sensor_temp_step = 25.0f; // Sensor temperature during this step
+bool  sensor_temp_had_valid_frame = false; // Did we get at least one valid sensor temp reading this step?
 
 RpmSensor rpm_sensor; // RPM sensor instance
 float rpm = 0.0; // Current RPM value
@@ -137,11 +139,13 @@ bool run_sensors(bool update_stats) {
     current_sum += current; // Add the current value to the sum
     power_sum += power; // Add the current power value to the sum
 
-    // Track thermal max temperature per step
+    // Track thermal max temperature and ambient per step
     if (thermal_is_available() && thermal_get_frame_age_ms() < THERMAL_STALE_MS) {
       thermal_had_valid_frame = true;
+      sensor_temp_had_valid_frame = true;
       float frm = thermal_get_frame_max();
       if (frm > thermal_max_step) thermal_max_step = frm;
+      sensor_temp_step = thermal_get_frame_ambient();
     }
   }
 
@@ -222,6 +226,8 @@ void reset_stats() {
 
     thermal_max_step = 0.0f;
     thermal_had_valid_frame = false;
+    sensor_temp_step = 25.0f;
+    sensor_temp_had_valid_frame = false;
 }
 
 // Fill in the test_data_t structure with the current average sensor values
@@ -256,9 +262,10 @@ void get_stats(test_data_t* data){
         data->power = power;
     }
     
-    // Thermal — store per-step max value
+    // Thermal — store per-step max and ambient values
     data->thermal_max   = thermal_max_step;
     data->thermal_valid = thermal_had_valid_frame;
+
     
     // Add RPM values from the global variables
     data->rpm = rpm_sensor.getRPM();

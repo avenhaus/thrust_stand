@@ -74,6 +74,7 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
     <div class="row"><span class="lbl">Power</span><span class="val" id="v-power">-- W</span></div>
     <div class="row"><span class="lbl">RPM</span><span class="val" id="v-rpm">--</span></div>
     <div class="row"><span class="lbl">Thermal Max</span><span class="val" id="v-thermal-max">-- °C</span></div>
+    <div class="row"><span class="lbl">Thermal Sensor</span><span class="val" id="v-sensor-temp">-- °C</span></div>
     <div class="row"><span class="lbl">Test</span><span class="val" id="v-test">Idle</span></div>
     <div class="row"><span class="lbl">Free Heap</span><span class="val" id="v-heap">--</span></div>
     <div class="row"><span class="lbl">Network</span><span class="val" id="v-network">--</span></div>
@@ -110,7 +111,7 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
       <table>
         <thead><tr>
           <th>Step</th><th>Thr%</th><th>Thrust</th><th>Torque</th><th>V</th><th>A</th><th>W</th>
-          <th>RPM</th><th>Thermal°C</th><th>Eff</th>
+          <th>RPM</th><th>ThermalMax</th><th>Eff</th>
         </tr></thead>
         <tbody id="results-body"></tbody>
       </table>
@@ -182,8 +183,10 @@ function handleTelemetry(d) {
   document.getElementById('v-power').textContent = d.power.toFixed(2) + ' W';
   document.getElementById('v-rpm').textContent = Math.round(d.rpm);
   document.getElementById('v-thermal-max').textContent = d.thermalMax.toFixed(1) + ' °C';
+  document.getElementById('v-sensor-temp').textContent = d.thermalAmbient.toFixed(1) + ' °C';
   document.getElementById('v-heap').textContent = d.freeHeap;
   document.getElementById('thermal-max').textContent = d.thermalMax.toFixed(1);
+
 
   const testRunning = d.testRunning;
   document.getElementById('v-test').textContent = testRunning 

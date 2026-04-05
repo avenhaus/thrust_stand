@@ -119,14 +119,16 @@ The implementation may reduce frame rate to protect stability and motor responsi
 
 ### 3. Motor Max-Temperature Monitoring
 
-The thermal feature must report a motor temperature metric that is useful and stable.
+The thermal feature must report motor temperature and ambient temperature metrics that are useful and stable.
 
 The firmware must:
 
 - compute the maximum temperature across the entire thermal frame
 - expose current frame maximum temperature
+- expose ambient temperature from the MLX90640 sensor
 - preserve the latest maximum motor temperature during a test step for display and logging
-- provide a clear and stable indication of motor hotspot temperature
+- preserve the latest ambient temperature during a test step for display and logging
+- provide a clear and stable indication of motor hotspot temperature and ambient reference temperature
 
 ### 4. Thermal Aiming View
 
@@ -174,6 +176,7 @@ The web page must display current live values for at least:
 - power
 - RPM
 - thermal maximum temperature
+- thermal ambient temperature
 - current test step and total steps
 
 The page should also surface whether thermal streaming is healthy or stale.
@@ -193,8 +196,11 @@ The firmware must expose:
 Thermal metrics must be part of the result model, not only the live view. At minimum the implementation must expose:
 
 - current maximum temperature in live telemetry
+- current ambient temperature in live telemetry
 - per-step maximum temperature for completed test steps
+- per-step ambient temperature for completed test steps
 - final run maximum temperature
+- final run ambient temperature
 - clear indication of whether a thermal value came from a valid frame or stale data
 
 ## Web Architecture Requirements
@@ -285,6 +291,7 @@ The web page must include these areas:
 - scaled thermal image
 - current palette or range information
 - current maximum temperature
+- current ambient temperature
 - thermal stream status
 
 ### 2. Live Telemetry Panel
