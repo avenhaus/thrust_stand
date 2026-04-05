@@ -28,7 +28,7 @@ input[type=range]{width:100%;accent-color:#00d4ff}
 .status-ok{background:#00ff88}
 .status-warn{background:#ffaa00}
 .status-err{background:#ff4444}
-canvas{image-rendering:pixelated;border:1px solid #0f3460;border-radius:4px;width:100%;aspect-ratio:4/3;display:block;cursor:crosshair}
+canvas{border:1px solid #0f3460;border-radius:4px;width:100%;aspect-ratio:4/3;display:block;cursor:crosshair;image-rendering:smooth}
 .temp-legend{display:flex;justify-content:space-between;font-size:11px;margin-top:4px}
 .collapsible summary{cursor:pointer;color:#00d4ff;font-size:.9rem;padding:4px 0}
 table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
@@ -237,6 +237,8 @@ const ironbow = [
 
 const canvas = document.getElementById('thermal-canvas');
 const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = true;
+ctx.imageSmoothingQuality = 'high';
 let lastFrameData = null;
 
 function handleThermalFrame(buf) {

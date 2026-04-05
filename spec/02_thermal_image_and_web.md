@@ -136,8 +136,9 @@ The web page must show a scaled-up live thermal image that:
 - updates often enough to be useful for positioning
 - includes a visible color map or contrast range
 - identifies the hottest region clearly
+- uses smooth bilinear interpolation when scaling the 32×24 pixel thermal array to reduce blockiness
 
-The aiming view does not need to behave like smooth video. A lower but stable update rate is acceptable.
+The aiming view does not need to behave like smooth video. A lower but stable update rate is acceptable. Smooth interpolation is handled entirely by the browser on the client side using canvas image smoothing, imposing no additional load on the ESP32.
 
 ### 5. Browser-Based Motor And Test Control
 
@@ -262,12 +263,12 @@ The implementation must choose a practical transport format for the browser ther
 
 Acceptable approaches include:
 
-- sending a compact array of temperatures and letting the browser render the heatmap
+- sending a compact array of temperatures and letting the browser render the heatmap with smooth interpolation
 - sending preprocessed low-rate image frames suitable for browser display
 
 The chosen approach must prioritize ESP32 stability and predictable memory use.
 
-The implementation must not assume the ESP32 can serve high-frame-rate video. A modest live rate optimized for aiming is sufficient.
+The implementation must not assume the ESP32 can serve high-frame-rate video. A modest live rate optimized for aiming is sufficient. The browser will apply smooth bilinear scaling to the small thermal array, improving visual quality without burdening the firmware.
 
 The recommended baseline target is:
 

@@ -149,8 +149,6 @@ void loop() {
       Serial.print(thermal_get_frame_max(), 1);
       Serial.print("C | Pot: ");
       Serial.print(poti_value);
-      Serial.print(" | Heap: ");
-      Serial.print(ESP.getFreeHeap());
       Serial.print("   \r");
       t = millis();
     }

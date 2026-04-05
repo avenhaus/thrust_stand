@@ -127,7 +127,6 @@ While running, the serial port continuously updates a single status line with fi
 - RPM
 - Thermal maximum temperature
 - Potentiometer value
-- Free heap memory
 
 ### CSV Results
 
