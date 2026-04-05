@@ -199,8 +199,8 @@ No.| GPIO | IO | RTC | ADC | Default   | Function
 /********************************************\
 |*  Wi-Fi Configuration
 \********************************************/
-#define WIFI_AP_PREFIX            "ThrustStand"
-#define WIFI_AP_DEFAULT_PASSWORD  "thruststand"
+#include "secrets.h"   // WiFi AP credentials (edit secrets.h, not this file)
+
 #define WIFI_STA_CONNECT_TIMEOUT_MS   10000   // 10 s initial connect window
 #define WIFI_STA_RECONNECT_TIMEOUT_MS 15000   // 15 s runtime reconnect window
 
