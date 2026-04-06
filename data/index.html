@@ -118,6 +118,84 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
     </div>
   </div>
 
+  <!-- Calibration Panel -->
+  <div class="panel full">
+    <details class="collapsible">
+      <summary>Sensor Calibration</summary>
+      <div style="margin-top:8px">
+        <div style="font-size:12px;color:#aaa;background:#0d1b36;padding:8px;border-radius:4px;margin-bottom:12px">
+          <strong>About Calibration:</strong> Calibration values adjust how raw sensor readings are converted to meaningful units (grams, amps). Use the INA226 Scan to find recommended zero offset, or manually enter values if you have known references. Changes apply immediately.
+        </div>
+        <div style="font-size:12px;color:#aaa;background:#081126;padding:10px;border-radius:4px;margin-bottom:12px">
+          <div style="font-weight:600;margin-bottom:6px">Thrust/Torque calibration instructions:</div>
+          <div style="font-size:11px;line-height:1.4">
+            1. Tare the sensors with no load attached.<br>
+            2. Place a known weight on the thrust sensor and adjust the Thrust factor until the reading matches the expected load.<br>
+            3. Place a known torque reference or use a calibrated test mass on the torque arm and adjust the Torque factor.<br>
+            4. Use the INA226 scan to capture a zero-current offset with the motor off and no load.<br>
+            5. Save the values and verify by re-testing with the same known references.
+          </div>
+        </div>
+        <div style="font-size:12px;color:#aaa;margin-bottom:8px">Current calibration values:</div>
+        <div class="row"><span class="lbl">Thrust Cal Factor</span><span class="val" id="cal-lc1">--</span></div>
+        <div class="row"><span class="lbl">Torque Cal Factor</span><span class="val" id="cal-lc2">--</span></div>
+        <div class="row"><span class="lbl">Shunt Resistance</span><span class="val" id="cal-shunt">--</span></div>
+        <div class="row"><span class="lbl">Current LSB</span><span class="val" id="cal-lsb">--</span></div>
+        <div class="row"><span class="lbl">Zero Offset</span><span class="val" id="cal-offset">--</span></div>
+        <div class="row"><span class="lbl">Max Current</span><span class="val" id="cal-maxcur">--</span></div>
+        <div class="row"><span class="lbl">Bus V Scaling</span><span class="val" id="cal-busscale">--</span></div>
+        
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid #0f3460">
+          <div style="font-size:12px;color:#aaa;margin-bottom:8px">INA226 Measurement Scan:</div>
+          <div style="font-size:11px;color:#888;margin-bottom:8px">
+            ⓘ Measures bus voltage & current with no load. Motor must be OFF. Results help calibrate the zero offset (current should read ~0 mA with ideal equipment connected).
+          </div>
+          <button id="btn-scan" onclick="runINA226Scan()">Run INA226 Scan</button>
+          <div id="scan-result" style="display:none;margin-top:8px;padding:8px;background:#0d1b36;border-radius:4px;font-size:12px">
+            <div class="row"><span class="lbl">Avg Bus Voltage</span><span class="val" id="scan-bv">--</span></div>
+            <div class="row"><span class="lbl">Avg Current (mA)</span><span class="val" id="scan-cur">--</span></div>
+            <div class="row"><span class="lbl">Recommended Offset</span><span class="val" id="scan-offset">--</span></div>
+          </div>
+        </div>
+        
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid #0f3460">
+          <div style="font-size:12px;color:#aaa;margin-bottom:8px">Update calibration:</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+            <div>
+              <label>Thrust <input type="text" id="input-lc1" placeholder="1941.5"></label>
+              <div style="font-size:11px;color:#888;margin-top:2px">Thrust calibration factor. Higher = more sensitivity.</div>
+            </div>
+            <div>
+              <label>Torque <input type="text" id="input-lc2" placeholder="1904"></label>
+              <div style="font-size:11px;color:#888;margin-top:2px">Torque calibration factor. Higher = more sensitivity.</div>
+            </div>
+            <div>
+              <label>Shunt <input type="text" id="input-shunt" placeholder="0.00331"></label>
+              <div style="font-size:11px;color:#888;margin-top:2px">Shunt resistance (Ω). Low shunt = higher current range but less accuracy.</div>
+            </div>
+            <div>
+              <label>LSB (mA) <input type="text" id="input-lsb" placeholder="0.5"></label>
+              <div style="font-size:11px;color:#888;margin-top:2px">Current LSB in mA. Typical: 0.050, 0.100, 0.250, 0.500, 1.0</div>
+            </div>
+            <div>
+              <label>Offset (mA) <input type="text" id="input-offset" placeholder="-23.850"></label>
+              <div style="font-size:11px;color:#888;margin-top:2px">Current zero offset. Use INA226 Scan to find recommended value.</div>
+            </div>
+            <div>
+              <label>Max Cur (A) <input type="text" id="input-maxcur" placeholder="24.47"></label>
+              <div style="font-size:11px;color:#888;margin-top:2px">Maximum current INA226 can measure. Typically 0.081 / shunt.</div>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button onclick="saveCalibration()">Save Calibration</button>
+            <button class="danger" onclick="resetCalibration()">Reset to Defaults</button>
+          </div>
+          <div id="cal-status" style="margin-top:6px;font-size:12px;color:#aaa"></div>
+        </div>
+      </div>
+    </details>
+  </div>
+
   <!-- Network Settings Panel -->
   <div class="panel full">
     <details class="collapsible">
@@ -386,9 +464,125 @@ function clearWiFi() {
   });
 }
 
+// --- Calibration ---
+function fetchCalibration() {
+  fetch('/api/calibration').then(r=>r.json()).then(d => {
+    document.getElementById('cal-lc1').textContent = d.lc_calibration_value_1?.toFixed(1) || '--';
+    document.getElementById('cal-lc2').textContent = d.lc_calibration_value_2?.toFixed(1) || '--';
+    document.getElementById('cal-shunt').textContent = d.shunt?.toFixed(5) || '--';
+    document.getElementById('cal-lsb').textContent = d.current_LSB_mA?.toFixed(2) || '--';
+    document.getElementById('cal-offset').textContent = d.current_zero_offset_mA?.toFixed(2) || '--';
+    document.getElementById('cal-maxcur').textContent = d.INA266_max_current?.toFixed(2) || '--';
+    document.getElementById('cal-busscale').textContent = d.bus_V_scaling_e4 || '--';
+    
+    // Populate input fields with current values
+    document.getElementById('input-lc1').value = d.lc_calibration_value_1 || '';
+    document.getElementById('input-lc2').value = d.lc_calibration_value_2 || '';
+    document.getElementById('input-shunt').value = d.shunt || '';
+    document.getElementById('input-lsb').value = d.current_LSB_mA || '';
+    document.getElementById('input-offset').value = d.current_zero_offset_mA || '';
+    document.getElementById('input-maxcur').value = d.INA266_max_current || '';
+  }).catch(console.error);
+}
+
+function runINA226Scan() {
+  const btn = document.getElementById('btn-scan');
+  btn.disabled = true;
+  btn.textContent = 'Scanning...';
+  
+  fetch('/api/calibration/ina226-scan', {
+    method:'POST'
+  }).then(r=>r.json()).then(d => {
+    if (d.ok) {
+      document.getElementById('scan-bv').textContent = d.avg_bus_voltage?.toFixed(3) + ' V' || '--';
+      document.getElementById('scan-cur').textContent = d.avg_current_mA?.toFixed(2) + ' mA' || '--';
+      document.getElementById('scan-offset').textContent = d.recommended_zero_offset?.toFixed(3) + ' mA' || '--';
+      document.getElementById('scan-result').style.display = 'block';
+      showCalStatus('INA226 scan complete. Consider using recommended offset.', 'ok');
+    } else {
+      showCalStatus('Scan failed: ' + (d.error || 'unknown error'), 'err');
+    }
+  }).catch(err => {
+    showCalStatus('Scan error: ' + err.message, 'err');
+  }).finally(() => {
+    btn.disabled = false;
+    btn.textContent = 'Run INA226 Scan';
+  });
+}
+
+function saveCalibration() {
+  const lc1 = parseFloat(document.getElementById('input-lc1').value);
+  const lc2 = parseFloat(document.getElementById('input-lc2').value);
+  const shunt = parseFloat(document.getElementById('input-shunt').value);
+  const lsb = parseFloat(document.getElementById('input-lsb').value);
+  const offset = parseFloat(document.getElementById('input-offset').value);
+  const maxcur = parseFloat(document.getElementById('input-maxcur').value);
+  const busscale = 10000; // Fixed for now, could make configurable
+  
+  if (!lc1 || !lc2 || !shunt || !lsb || !offset || !maxcur) {
+    showCalStatus('All fields are required', 'err');
+    return;
+  }
+  
+  if (lc1 <= 0 || lc2 <= 0 || shunt <= 0) {
+    showCalStatus('Thrust/Torque and shunt values must be positive', 'err');
+    return;
+  }
+  
+  const payload = {
+    lc_calibration_value_1: lc1,
+    lc_calibration_value_2: lc2,
+    shunt: shunt,
+    current_LSB_mA: lsb,
+    current_zero_offset_mA: offset,
+    INA266_max_current: maxcur,
+    bus_V_scaling_e4: busscale
+  };
+  
+  fetch('/api/calibration', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  }).then(r=>r.json()).then(d => {
+    if (d.ok) {
+      showCalStatus('✓ Calibration saved and applied', 'ok');
+      setTimeout(fetchCalibration, 500);
+    } else {
+      showCalStatus('Save failed: ' + (d.error || 'unknown error'), 'err');
+    }
+  }).catch(err => {
+    showCalStatus('Save error: ' + err.message, 'err');
+  });
+}
+
+function resetCalibration() {
+  if (!confirm('Reset to default calibration values? Current values will be lost.')) return;
+  
+  fetch('/api/calibration/reset', {
+    method:'POST'
+  }).then(r=>r.json()).then(d => {
+    if (d.ok) {
+      showCalStatus('✓ Reset to defaults and applied', 'ok');
+      setTimeout(fetchCalibration, 500);
+    } else {
+      showCalStatus('Reset failed: ' + (d.error || 'unknown error'), 'err');
+    }
+  }).catch(err => {
+    showCalStatus('Reset error: ' + err.message, 'err');
+  });
+}
+
+function showCalStatus(msg, type) {
+  const el = document.getElementById('cal-status');
+  el.textContent = msg;
+  el.style.color = (type === 'ok') ? '#00ff88' : '#ff4444';
+}
+
 // --- Init ---
 connectWS();
+fetchCalibration();
 setInterval(fetchWiFiStatus, 10000);
+setInterval(fetchCalibration, 30000);
 </script>
 </body>
 </html>

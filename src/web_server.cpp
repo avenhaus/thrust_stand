@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include <AsyncJson.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <LittleFS.h>
@@ -349,6 +350,93 @@ static void _handleWiFiClear(AsyncWebServerRequest* req) {
 }
 
 // ---------------------------------------------------------------------------
+//  Calibration Handlers
+// ---------------------------------------------------------------------------
+
+static void _handleGetCalibration(AsyncWebServerRequest* req) {
+    calibration_t* cal = get_calibration_ptr();
+    
+    JsonDocument doc;
+    doc["lc_calibration_value_1"]   = cal->lc_calibration_value_1;
+    doc["lc_calibration_value_2"]   = cal->lc_calibration_value_2;
+    doc["shunt"]                    = cal->shunt;
+    doc["current_LSB_mA"]           = cal->current_LSB_mA;
+    doc["current_zero_offset_mA"]   = cal->current_zero_offset_mA;
+    doc["INA266_max_current"]       = cal->INA266_max_current;
+    doc["bus_V_scaling_e4"]         = cal->bus_V_scaling_e4;
+    
+    String out;
+    serializeJson(doc, out);
+    req->send(200, "application/json", out);
+}
+
+static void _handleSetCalibrationJson(AsyncWebServerRequest* req, JsonVariant& doc) {
+    if (!doc.is<JsonObject>()) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Expected JSON object\"}");
+        return;
+    }
+
+    JsonObject obj = doc.as<JsonObject>();
+    if (!obj.containsKey("lc_calibration_value_1") || !obj.containsKey("lc_calibration_value_2") ||
+        !obj.containsKey("shunt") || !obj.containsKey("current_LSB_mA") ||
+        !obj.containsKey("current_zero_offset_mA") || !obj.containsKey("INA266_max_current") ||
+        !obj.containsKey("bus_V_scaling_e4")) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Missing required calibration fields\"}");
+        return;
+    }
+
+    float lc1 = obj["lc_calibration_value_1"].as<float>();
+    float lc2 = obj["lc_calibration_value_2"].as<float>();
+    float shunt = obj["shunt"].as<float>();
+
+    if (lc1 <= 0 || lc2 <= 0 || shunt <= 0) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Calibration values must be positive\"}");
+        return;
+    }
+
+    calibration_t cal;
+    cal.lc_calibration_value_1 = lc1;
+    cal.lc_calibration_value_2 = lc2;
+    cal.shunt = shunt;
+    cal.current_LSB_mA = obj["current_LSB_mA"].as<float>();
+    cal.current_zero_offset_mA = obj["current_zero_offset_mA"].as<float>();
+    cal.INA266_max_current = obj["INA266_max_current"].as<float>();
+    cal.bus_V_scaling_e4 = obj["bus_V_scaling_e4"].as<uint16_t>();
+
+    set_calibration(&cal);
+    apply_calibration(&cal);
+
+    DEBUG_println(FST("# Calibration updated from web UI."));
+    req->send(200, "application/json", "{\"ok\":true,\"message\":\"Calibration updated and applied\"}");
+}
+
+static void _handleResetCalibration(AsyncWebServerRequest* req) {
+    calibration_t cal = CALIBRATION_DEFAULTS;
+    set_calibration(&cal);
+    apply_calibration(&cal);
+
+    DEBUG_println(FST("# Calibration reset to firmware defaults."));
+    req->send(200, "application/json", "{\"ok\":true,\"message\":\"Calibration reset to defaults\"}");
+}
+
+static void _handleINA226Scan(AsyncWebServerRequest* req) {
+    DEBUG_println(FST("# Starting INA226 calibration scan from web UI ..."));
+    
+    ina226_scan_result_t result = calibrate_ina226_scan();
+    
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["avg_bus_voltage"] = result.avg_bus_voltage;
+    doc["avg_current_mA"] = result.avg_current_mA;
+    doc["recommended_zero_offset"] = result.recommended_zero_offset;
+    doc["message"] = "Scan complete. Use recommended_zero_offset as new current_zero_offset_mA value.";
+    
+    String out;
+    serializeJson(doc, out);
+    req->send(200, "application/json", out);
+}
+
+// ---------------------------------------------------------------------------
 //  Thermal frame endpoint (binary push over WebSocket)
 // ---------------------------------------------------------------------------
 static void _pushThermalFrame() {
@@ -456,6 +544,12 @@ void web_init() {
     _server.on("/api/wifi/status",     HTTP_GET,  _handleWiFiStatus);
     _server.on("/api/wifi/credentials",HTTP_POST, _handleWiFiCredentials);
     _server.on("/api/wifi/clear",      HTTP_POST, _handleWiFiClear);
+    
+    // --- Calibration API ---
+    _server.on("/api/calibration",           HTTP_GET,  _handleGetCalibration);
+    _server.on("/api/calibration",           HTTP_POST, _handleSetCalibrationJson);
+    _server.on("/api/calibration/reset",     HTTP_POST, _handleResetCalibration);
+    _server.on("/api/calibration/ina226-scan", HTTP_POST, _handleINA226Scan);
 
     // --- Static files from LittleFS ---
     _server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");

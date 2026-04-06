@@ -241,6 +241,34 @@ extern const char COMPILE_TIME[] PROGMEM;
 #define EEPROM_SIZE sizeof(eeprom_data_t)
 
 /* ============================================== *\
+ * Sensor Calibration
+\* ============================================== */
+
+typedef struct {
+    float lc_calibration_value_1;    // Thrust calibration factor
+    float lc_calibration_value_2;    // Torque calibration factor
+    float shunt;                     // INA226 shunt resistance (Ohms)
+    float current_LSB_mA;            // INA226 current LSB (milliamps)
+    float current_zero_offset_mA;    // INA226 current zero offset (milliamps)
+    float INA266_max_current;        // INA226 max current (Amps)
+    uint16_t bus_V_scaling_e4;       // INA226 bus voltage scaling (1e-4)
+} calibration_t;
+
+// Default calibration values (from current hardcoded values)
+#define CALIBRATION_DEFAULTS {                                    \
+    .lc_calibration_value_1 = 1941.5f,                           \
+    .lc_calibration_value_2 = 1904.0f,                           \
+    .shunt = 0.002f * (481.15f / 290.0f),                        \
+    .current_LSB_mA = 0.5f,                                      \
+    .current_zero_offset_mA = -23.850f,                          \
+    .INA266_max_current = 0.081f / (0.002f * (481.15f / 290.0f)), \
+    .bus_V_scaling_e4 = 10000                                    \
+}
+
+#define CALIBRATION_NVS_NAMESPACE "thrust_stand"
+#define CALIBRATION_NVS_KEY "calibration"
+
+/* ============================================== *\
  * Debug
 \* ============================================== */
 

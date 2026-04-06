@@ -5,24 +5,21 @@
 #include "rpm_sensor.h"
 #include <HX711_ADC.h>
 #include <INA226.h>
+#include <Preferences.h>
 
 
 //HX711 constructor (dout pin, sck pin)
 HX711_ADC LoadCell_1(HX711_DOUT_1_PIN, HX711_SCK_1_PIN); //HX711 1
-float lc_calibration_value_1 = 1941.5; // calibration value load cell 1
-float lc_value_1 = 0.0; // load cell 1 value
-
 HX711_ADC LoadCell_2(HX711_DOUT_2_PIN, HX711_SCK_2_PIN); //HX711 2
-float lc_calibration_value_2 = 1904; // calibration value load cell 2
-float lc_value_2 = 0.0; // load cell 2 value
 
 INA226 INA(0x40);
-float cal =  (481.15 / 290.0);
-float shunt = 0.002*(481.15 / 290.0);                      /* shunt (Shunt Resistance in Ohms). Lower shunt gives higher accuracy but lower current measurement range. Recommended value 0.020 Ohm. Min 0.001 Ohm */
-float INA266_max_current = 0.081 / shunt; /* INA226 max current depends on shunt restistor: 0.081 * shunt  */
-float current_LSB_mA = 0.5;              /* current_LSB_mA (Current Least Significant Bit in milli Amperes). Recommended values: 0.050, 0.100, 0.250, 0.500, 1, 2, 2.5 (in milli Ampere units) */
-float current_zero_offset_mA = -23.850;// -39.650*cal;    /* current_zero_offset_mA (Current Zero Offset in milli Amperes, default = 0) | Needs to be updated along with shunt!! */
-uint16_t bus_V_scaling_e4 = 10000;    
+
+// Current calibration values (will be loaded from NVS or use defaults)
+static calibration_t current_calibration;
+
+// Exposed sensor values for external access
+float lc_value_1 = 0.0; // thrust value from load cell 1
+float lc_value_2 = 0.0; // torque value from load cell 2    
 
 float bus_voltage = 0.0;       //  Volt
 float shunt_voltage = 0.0;     //  Volt
@@ -49,8 +46,73 @@ bool  sensor_temp_had_valid_frame = false; // Did we get at least one valid sens
 RpmSensor rpm_sensor; // RPM sensor instance
 float rpm = 0.0; // Current RPM value
 
+// ============================================================================
+//  Calibration Management Functions
+// ============================================================================
+
+void get_calibration(calibration_t* cal) {
+    if (!cal) return;
+    
+    Preferences prefs;
+    prefs.begin(CALIBRATION_NVS_NAMESPACE, true);
+    
+    // Try to load from NVS; if not found, use defaults
+    if (prefs.isKey(CALIBRATION_NVS_KEY)) {
+        size_t len = prefs.getBytesLength(CALIBRATION_NVS_KEY);
+        if (len == sizeof(calibration_t)) {
+            prefs.getBytes(CALIBRATION_NVS_KEY, (uint8_t*)cal, sizeof(calibration_t));
+            DEBUG_println(FST("# Calibration loaded from NVS."));
+        } else {
+            *cal = (calibration_t)CALIBRATION_DEFAULTS;
+            DEBUG_printf(FST("# NVS calibration size mismatch (%d vs %d). Using defaults.\n"), len, sizeof(calibration_t));
+        }
+    } else {
+        *cal = (calibration_t)CALIBRATION_DEFAULTS;
+        DEBUG_println(FST("# No calibration in NVS. Using defaults."));
+    }
+    
+    prefs.end();
+}
+
+void set_calibration(const calibration_t* cal) {
+    if (!cal) return;
+    
+    Preferences prefs;
+    prefs.begin(CALIBRATION_NVS_NAMESPACE, false);
+    prefs.putBytes(CALIBRATION_NVS_KEY, (const uint8_t*)cal, sizeof(calibration_t));
+    prefs.end();
+    
+    DEBUG_println(FST("# Calibration saved to NVS."));
+}
+
+calibration_t* get_calibration_ptr() {
+    return &current_calibration;
+}
+
+void apply_calibration(const calibration_t* cal) {
+    if (!cal) return;
+    
+    // Update local calibration struct
+    current_calibration = *cal;
+    
+    // Apply to hardware
+    LoadCell_1.setCalFactor(cal->lc_calibration_value_1);
+    LoadCell_2.setCalFactor(cal->lc_calibration_value_2);
+    INA.setMaxCurrentShunt(cal->INA266_max_current, cal->shunt);
+    INA.configure(cal->shunt, cal->current_LSB_mA, cal->current_zero_offset_mA, cal->bus_V_scaling_e4);
+    
+    DEBUG_println(FST("# Calibration applied to hardware."));
+}
+
+// ============================================================================
+//  Sensor Initialization
+// ============================================================================
+
 bool init_sensors(boolean tare) {
   // Initialize the thermocouple.
+  
+  // Load calibration from NVS (or use defaults)
+  get_calibration(&current_calibration);
   
   // Initialize the load cells.
   DEBUG_println(FST("# Initialize HX711 Load Cells ..."));
@@ -76,8 +138,8 @@ bool init_sensors(boolean tare) {
     DEBUG_println(FST("# Timeout, check MCU => HX711 No.2 wiring and pin designations"));
     return false;
   }
-  LoadCell_1.setCalFactor(lc_calibration_value_1); // user set calibration value (float)
-  LoadCell_2.setCalFactor(lc_calibration_value_2); // user set calibration value (float)
+  LoadCell_1.setCalFactor(current_calibration.lc_calibration_value_1); // user-set thrust calibration factor
+  LoadCell_2.setCalFactor(current_calibration.lc_calibration_value_2); // user-set torque calibration factor
 
   Wire.begin();
   if (!INA.begin() )
@@ -85,9 +147,8 @@ bool init_sensors(boolean tare) {
     DEBUG_println(FST("# Could not connect to INA226 Current Sensor."));
     return false;
   }
-  INA.setMaxCurrentShunt(INA266_max_current, shunt);
-  INA.configure(shunt, current_LSB_mA, current_zero_offset_mA, bus_V_scaling_e4);
-  //calibrate_ina226();
+  INA.setMaxCurrentShunt(current_calibration.INA266_max_current, current_calibration.shunt);
+  INA.configure(current_calibration.shunt, current_calibration.current_LSB_mA, current_calibration.current_zero_offset_mA, current_calibration.bus_V_scaling_e4);
   DEBUG_println(FST("# INA226 Current Sensor initialized."));
 
   // Initialize MLX90640 thermal sensor (non-critical — continues if absent)
@@ -119,8 +180,8 @@ bool run_sensors(bool update_stats) {
     }
   }
     
-  if (LoadCell_1.getTareStatus() == true) { DEBUG_println(FST("# Tare load cell 1 complete")) };
-  if (LoadCell_2.getTareStatus() == true) { DEBUG_println(FST("# Tare load cell 2 complete")) };
+  if (LoadCell_1.getTareStatus() == true) { DEBUG_println(FST("# Tare thrust sensor complete")) };
+  if (LoadCell_2.getTareStatus() == true) { DEBUG_println(FST("# Tare torque sensor complete")) };
 
   bus_voltage = INA.getBusVoltage();
   shunt_voltage = INA.getShuntVoltage_mV();
@@ -155,6 +216,7 @@ bool run_sensors(bool update_stats) {
 
 void calibrate_ina226() {
   DEBUG_println(FST("# Calibrate INA226 Current Sensor"));
+  DEBUG_println(FST("# Motor must be OFF and no load connected during this procedure."));
 
   float bv = 0, cu = 0;
   for (int i = 0; i < 10; i++) {
@@ -187,23 +249,54 @@ void calibrate_ina226() {
   Serial.println("\nCALIBRATION VALUES TO USE:\t(DMM = Digital MultiMeter)");
   Serial.println("Step 5. Attach a power supply with voltage 5-10V to INA226 on VBUS/IN+ and GND pins, without any load.");
   Serial.print("\tcurrent_zero_offset_mA = ");
-  Serial.print(current_zero_offset_mA + cu, 3);
+  Serial.print(current_calibration.current_zero_offset_mA + cu, 3);
   Serial.println("mA");
   if(cu > 5)
     Serial.println("********** NOTE: No resistive load needs to be present during current_zero_offset_mA calibration. **********");
   Serial.print("\tbus_V_scaling_e4 = ");
-  Serial.print(bus_V_scaling_e4);
+  Serial.print(current_calibration.bus_V_scaling_e4);
   Serial.print(" / ");
   Serial.print(bv, 3);
   Serial.println(" * (DMM Measured Bus Voltage)");
   Serial.println("Step 8. Set DMM in current measurement mode. Use a resistor that will generate around 50-100mA IOUT measurement between IN- and GND pins with DMM in series with load. Note current measured on DMM.");
   Serial.print("\tshunt = ");
-  Serial.print(shunt,4);
+  Serial.print(current_calibration.shunt, 4);
   Serial.print(" * ");
   Serial.print(cu, 3);
   Serial.println(" / (DMM Measured IOUT)");
   if(cu < 40)
     Serial.println("********** NOTE: IOUT needs to be more than 50mA for better shunt resistance calibration. **********");
+}
+
+// Perform INA226 measurement scan and return results for web UI
+// Returns: { avgBusVoltage, avgCurrent, recommendedZeroOffset }
+ina226_scan_result_t calibrate_ina226_scan() {
+  ina226_scan_result_t result = {0.0f, 0.0f, 0.0f};
+  
+  DEBUG_println(FST("# INA226 Scan: Measuring bus voltage and current (no load required)"));
+  
+  // Measure bus voltage (10 samples @ 100ms interval)
+  float bv_sum = 0.0f;
+  for (int i = 0; i < 10; i++) {
+    bv_sum += INA.getBusVoltage();
+    delay(100);
+  }
+  result.avg_bus_voltage = bv_sum / 10.0f;
+  
+  // Measure current (10 samples @ 100ms interval)
+  float cu_sum = 0.0f;
+  for (int i = 0; i < 10; i++) {
+    cu_sum += INA.getCurrent_mA();
+    delay(100);
+  }
+  result.avg_current_mA = cu_sum / 10.0f;
+  
+  // Calculate recommended zero offset correction
+  result.recommended_zero_offset = current_calibration.current_zero_offset_mA + (result.avg_current_mA / 1000.0f);
+  
+  DEBUG_printf(FST("# Scan complete: BV=%.3fV, I=%.3fmA\n"), result.avg_bus_voltage, result.avg_current_mA);
+  
+  return result;
 }
 
 void tare_sensors() {
