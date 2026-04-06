@@ -53,10 +53,11 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
     <h2>Thermal Image</h2>
     <canvas id="thermal-canvas" width="32" height="24"></canvas>
     <div class="temp-legend">
-      <span id="temp-min">--°C</span>
-      <span>Max: <b id="thermal-max">--</b>°C</span>
-      <span id="temp-max">--°C</span>
+      <span>Min: <b id="temp-min">--</b>°C</span>
+      <span>MaxMax: <b id="thermal-max">--</b>°C</span>
+      <span>Max: <b id="temp-max">--</b>°C</span>
     </div>
+    <div style="font-size:11px;color:#888;margin-top:2px">MaxMax resets at the start of each test step.</div>
     <div style="margin-top:6px;font-size:12px">
       <span id="thermal-status"><span class="status-dot status-err"></span>No sensor</span>
     </div>
@@ -76,6 +77,7 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
     <div class="row"><span class="lbl">Thermal Max</span><span class="val" id="v-thermal-max">-- °C</span></div>
     <div class="row"><span class="lbl">Thermal Sensor</span><span class="val" id="v-sensor-temp">-- °C</span></div>
     <div class="row"><span class="lbl">Test</span><span class="val" id="v-test">Idle</span></div>
+    <div class="row"><span class="lbl">Abort Reason</span><span class="val" id="v-abort-reason">--</span></div>
     <div class="row"><span class="lbl">Free Heap</span><span class="val" id="v-heap">--</span></div>
     <div class="row"><span class="lbl">Network</span><span class="val" id="v-network">--</span></div>
   </div>
@@ -87,7 +89,7 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
       <button id="btn-start" onclick="apiPost('/api/test/start')">Start Test</button>
       <button id="btn-abort" onclick="apiPost('/api/test/abort')" disabled>Abort Test</button>
       <button class="danger" onclick="apiPost('/api/motor/stop')">STOP Motor</button>
-      <button onclick="apiPost('/api/sensors/tare')">Tare Sensors</button>
+      <button onclick="tareSensors()" id="btn-tare">Tare Sensors</button>
     </div>
     <div style="margin-top:12px">
       <label style="display:flex;align-items:center;gap:8px">
@@ -98,9 +100,27 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
         <button id="btn-apply-throttle" onclick="applyThrottle()">Apply</button>
       </div>
     </div>
+    <div style="margin-top:12px;border-top:1px solid #0f3460;padding-top:10px">
+      <div style="font-size:12px;font-weight:bold;color:#aaa;margin-bottom:8px">Test Configuration</div>
+      <div style="display:grid;grid-template-columns:auto 1fr;align-items:center;gap:4px 10px;margin-top:4px">
+        <span class="lbl">Total Steps</span>    <input type="text" id="cfg-total-steps" placeholder="20">
+        <span class="lbl">Step Time (ms)</span> <input type="text" id="cfg-step-time" placeholder="2000">
+        <span class="lbl">Accel Time (ms)</span><input type="text" id="cfg-step-accel-time" placeholder="1000">
+        <span class="lbl">Decel Time (ms)</span><input type="text" id="cfg-decel-time" placeholder="3000">
+        <span class="lbl">Min Throttle (%)</span><input type="text" id="cfg-min-throttle" placeholder="30">
+        <span class="lbl">Max Throttle (%)</span><input type="text" id="cfg-max-throttle" placeholder="100">
+        <span class="lbl">Max Temp (°C)</span>  <input type="text" id="cfg-max-temp" placeholder="85">
+      </div>
+      <div class="btn-row" style="margin-top:8px">
+        <button onclick="saveTestConfig()">Save</button>
+        <button class="danger" onclick="resetTestConfig()">Reset Defaults</button>
+        <button onclick="fetchTestConfig()">Refresh</button>
+      </div>
+      <div id="cfg-status" style="margin-top:6px;font-size:12px;color:#aaa"></div>
+    </div>
   </div>
 
-  <!-- Test Results Panel -->
+<!-- Test Results Panel -->
   <div class="panel">
     <h2>Test Results</h2>
     <div class="btn-row" style="margin-bottom:6px">
@@ -224,6 +244,8 @@ let ws = null;
 let wsReconnectTimer = null;
 let heartbeatTimer = null;
 let throttleActive = false;
+let lastCurrentStep = -1;
+let wasTestRunning = false;
 
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -262,6 +284,7 @@ function handleTelemetry(d) {
   document.getElementById('v-rpm').textContent = Math.round(d.rpm);
   document.getElementById('v-thermal-max').textContent = d.thermalMax.toFixed(1) + ' °C';
   document.getElementById('v-sensor-temp').textContent = d.thermalAmbient.toFixed(1) + ' °C';
+  document.getElementById('v-abort-reason').textContent = d.abortReason ? d.abortReason : '--';
   document.getElementById('v-heap').textContent = d.freeHeap;
   document.getElementById('thermal-max').textContent = d.thermalMax.toFixed(1);
 
@@ -278,6 +301,18 @@ function handleTelemetry(d) {
   } else {
     ts.innerHTML = '<span class="status-dot status-warn"></span>Stale / No data';
   }
+
+  // Update test results after each step
+  if (d.currentStep !== lastCurrentStep && d.currentStep > 0) {
+    fetchResults();
+    lastCurrentStep = d.currentStep;
+  }
+
+  // Update when test ends
+  if (wasTestRunning && !testRunning) {
+    fetchResults();
+  }
+  wasTestRunning = testRunning;
 }
 
 // --- Thermal rendering ---
@@ -393,6 +428,25 @@ function apiPost(url) {
   }).catch(console.error);
 }
 
+function tareSensors() {
+  const btn = document.getElementById('btn-tare');
+  btn.disabled = true;
+  btn.textContent = 'Taring...';
+  fetch('/api/sensors/tare', {method:'POST'}).then(r=>r.json()).then(d => {
+    btn.textContent = d.ok ? 'Tared' : 'Tare Sensors';
+    setTimeout(() => {
+      btn.textContent = 'Tare Sensors';
+      btn.disabled = false;
+    }, 5000);
+  }).catch(() => {
+    btn.textContent = 'Error';
+    setTimeout(() => {
+      btn.textContent = 'Tare Sensors';
+      btn.disabled = false;
+    }, 5000);
+  });
+}
+
 // --- Throttle slider ---
 function onThrottleSlider(v) {
   document.getElementById('slider-val').textContent = v;
@@ -413,6 +467,70 @@ function applyThrottle() {
       }
     }
   });
+}
+
+function fetchTestConfig() {
+  fetch('/api/test/config').then(r=>r.json()).then(d => {
+    document.getElementById('cfg-total-steps').value = d.totalSteps;
+    document.getElementById('cfg-step-time').value = d.stepTimeMs;
+    document.getElementById('cfg-step-accel-time').value = d.stepAccelTimeMs;
+    document.getElementById('cfg-decel-time').value = d.decelTimeMs;
+    document.getElementById('cfg-min-throttle').value = d.minThrottlePercent;
+    document.getElementById('cfg-max-throttle').value = d.maxThrottlePercent;
+    document.getElementById('cfg-max-temp').value = d.maxTempLimitCelsius;
+    showConfigStatus('Loaded current test configuration.', 'ok');
+  }).catch(err => {
+    showConfigStatus('Unable to load test configuration.', 'err');
+    console.error(err);
+  });
+}
+
+function saveTestConfig() {
+  const payload = {
+    totalSteps: parseInt(document.getElementById('cfg-total-steps').value, 10),
+    stepTimeMs: parseInt(document.getElementById('cfg-step-time').value, 10),
+    stepAccelTimeMs: parseInt(document.getElementById('cfg-step-accel-time').value, 10),
+    decelTimeMs: parseInt(document.getElementById('cfg-decel-time').value, 10),
+    minThrottlePercent: parseFloat(document.getElementById('cfg-min-throttle').value),
+    maxThrottlePercent: parseFloat(document.getElementById('cfg-max-throttle').value),
+    maxTempLimitCelsius: parseFloat(document.getElementById('cfg-max-temp').value)
+  };
+
+  fetch('/api/test/config', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  }).then(r=>r.json()).then(d => {
+    if (d.ok) {
+      showConfigStatus('Configuration saved.', 'ok');
+    } else {
+      showConfigStatus(d.error || 'Save failed.', 'err');
+    }
+  }).catch(err => {
+    showConfigStatus('Save error.', 'err');
+    console.error(err);
+  });
+}
+
+function resetTestConfig() {
+  if (!confirm('Reset test configuration to defaults?')) return;
+  fetch('/api/test/config/reset', {method:'POST'}).then(r=>r.json()).then(d => {
+    if (d.ok) {
+      fetchTestConfig();
+      showConfigStatus('Configuration reset to defaults.', 'ok');
+    } else {
+      showConfigStatus(d.error || 'Reset failed.', 'err');
+    }
+  }).catch(err => {
+    showConfigStatus('Reset error.', 'err');
+    console.error(err);
+  });
+}
+
+function showConfigStatus(msg, type) {
+  const el = document.getElementById('cfg-status');
+  el.textContent = msg;
+  el.style.color = (type === 'ok') ? '#00ff88' : '#ff4444';
 }
 
 // --- Test results ---
@@ -581,6 +699,7 @@ function showCalStatus(msg, type) {
 // --- Init ---
 connectWS();
 fetchCalibration();
+fetchTestConfig();
 setInterval(fetchWiFiStatus, 10000);
 setInterval(fetchCalibration, 30000);
 </script>

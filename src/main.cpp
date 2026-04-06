@@ -1,4 +1,8 @@
-// - 
+// TODO
+// - Ambient Temperature with DS18B20
+// Graph of test results with Plotly.js or similar 
+// Add support for multiple test profiles with different step configs and names. 
+// Add motor specs: Brand Size, KV, Propeller to include in CSV and download file name. add timestamp to CSV contents. Add input fields in test control pane.
 
 /*======================================================================*\
  * ESP32 Thrust Stand
@@ -41,11 +45,11 @@ Print* debugStream = &LOGGER;
 unsigned long t = 0;
 
 int current_step = -1;
-unsigned int total_steps = 20;
-unsigned long step_time_ms = 2000;
-unsigned long step_accel_time_ms = 1000;
 unsigned long step_start_ts = 0;
-unsigned long decel_time_ms = 3000; // Time to decelerate to stop
+unsigned long step_end_ts = 0;
+String abort_reason = "";
+
+test_config_t test_config = TEST_CONFIG_DEFAULTS;
 
 MotorESC motor;
 Potentiometer poti(POTI_PIN, 0, 4095, 0.1f); // Potentiometer for throttle control
@@ -60,7 +64,7 @@ void check_serial();
 void setThrottle(float throttle);
 void start_test();
 void run_test();
-void abort_test();
+void abort_test(bool thermal_abort = false);
 void print_stats(const test_data_t& data);
 void print_csv_results();
 void print_help();
@@ -106,6 +110,9 @@ void setup() {
     DEBUG_println(FST("# Sensors initialization failed!"));
     //while (1) { delay(1000); } // Halt the program if sensors initialization fails
   }
+
+  // Load persisted test configuration before starting the web UI
+  web_load_test_config(&test_config);
 
   // Initialize Wi-Fi and web server
   web_init();
@@ -221,16 +228,34 @@ void check_serial() {
   else if (inByte == 'h') { print_help(); } // Print help message
 }
 
+static bool validate_test_config(const test_config_t& cfg) {
+  if (cfg.total_steps == 0 || cfg.total_steps > 100) return false;
+  if (cfg.step_time_ms < 100) return false;
+  if (cfg.step_accel_time_ms == 0) return false;
+  if (cfg.decel_time_ms == 0) return false;
+  if (cfg.min_throttle_percent < 0.0f || cfg.max_throttle_percent > 100.0f) return false;
+  if (cfg.min_throttle_percent >= cfg.max_throttle_percent) return false;
+  if (cfg.max_temp_limit_celsius <= 0.0f) return false;
+  return true;
+}
+
 void start_test() {
+  if (!validate_test_config(test_config)) {
+    DEBUG_println(FST("# Invalid test configuration. Check web settings."));
+    return;
+  }
+
+  abort_reason = "";
   reset_stats(); // Reset statistics before starting the test
   current_step = 0;
-  step_start_ts = millis() + step_accel_time_ms + 100; // Set end time for next step
-  
-  // Begin first step with smooth acceleration
-  // float throttle = (float)current_step / total_steps * 100.0f;
-  // motor.setThrottle(throttle, true, 1000); // Smoothly accelerate to first step
-  
-  DEBUG_printf(FST("\n# Test started.\n"));
+  // Step 0: idle baseline — sample for the full step_time_ms at 0% throttle.
+  // step_start_ts in the future keeps the run_sensors() sampling gate open.
+  step_start_ts = millis() + test_config.step_time_ms;
+  step_end_ts   = millis() + test_config.step_time_ms;
+
+  motor.setThrottle(0.0f, false, 0);
+
+  DEBUG_printf(FST("\n# Test started. Step 0 = idle baseline.\n"));
 }
 
 void print_stats(const test_data_t& data) { 
@@ -255,10 +280,10 @@ void print_stats(const test_data_t& data) {
 void print_csv_results() {
   // Print CSV header
   Serial.println(F("\n\n*** TEST RESULTS CSV DATA ***\n"));
-  Serial.println(F("Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples"));
+  Serial.println(F("Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Thermal_Valid,Thermal_Abort,Efficiency(g/W),LC_Samples,Sensor_Samples"));
   
   // Print data rows
-  for (unsigned int i = 0; i <= total_steps; i++) {
+  for (unsigned int i = 0; i <= test_config.total_steps; i++) {
     // Skip rows with no data (where throttle is 0 and samples are 0)
     if (test_data[i].throttle == 0 && 
         test_data[i].lc_samples == 0 && 
@@ -291,9 +316,9 @@ void print_csv_results() {
     Serial.print(F(","));
     Serial.print(test_data[i].thermal_max, 2);
     Serial.print(F(","));
-
-    Serial.print(F(","));
     Serial.print(test_data[i].thermal_valid ? 1 : 0);
+    Serial.print(F(","));
+    Serial.print(test_data[i].thermal_abort ? 1 : 0);
     Serial.print(F(","));
     Serial.print(efficiency, 2);
     Serial.print(F(","));
@@ -315,46 +340,74 @@ void run_test() {
     return;
   }
 
+  // Thermal abort check
+  if (thermal_is_available() && thermal_get_frame_age_ms() < THERMAL_STALE_MS) {
+    if (thermal_get_frame_max() > test_config.max_temp_limit_celsius) {
+      DEBUG_printf(FST("\n# Thermal limit exceeded: %.1f°C > %.1f°C — aborting test.\n"), thermal_get_frame_max(), test_config.max_temp_limit_celsius);
+      test_data[current_step].thermal_abort = true;
+      abort_reason = "Thermal limit exceeded";
+      get_stats(&test_data[current_step]);
+      abort_test(true);
+      return;
+    }
+  }
+
   unsigned long now = millis();
-  if (now >= step_start_ts + step_time_ms) {
+  if (now >= step_end_ts) {
     test_data[current_step].throttle = motor.getCurrentThrottle();
     get_stats(&test_data[current_step]);
     print_stats(test_data[current_step]);
 
     current_step++;
-    if (current_step < 6) { current_step = 6; } // Ensure we start from step 6 if we are below it
-    
-    if (current_step > total_steps) {
+    if (current_step > test_config.total_steps) {
       DEBUG_println(FST("\n# Test completed."));
       print_csv_results(); // Print results in CSV format
       
       // Start smooth deceleration to stop
-      motor.stop(true, decel_time_ms);
+      motor.stop(true, test_config.decel_time_ms);
+      abort_reason = "";
       current_step = -1; // Reset test
       
       return;
     }
-    
-   step_start_ts = millis() + step_accel_time_ms + 100; // Set start time for next step
-   float throttle = (float)current_step / total_steps * 100.0f; // Calculate throttle percentage
-    
+
+    step_start_ts = millis() + test_config.step_accel_time_ms + 100; // sampling gate: open during accel
+    step_end_ts   = step_start_ts + test_config.step_time_ms;          // step ends after accel + hold
+    // Steps 1..total_steps ramp linearly from min to max throttle.
+    // (current_step-1)/(total_steps-1) maps step 1→min and step total_steps→max.
+    float throttle;
+    if (test_config.total_steps <= 1) {
+      throttle = test_config.min_throttle_percent;
+    } else {
+      throttle = test_config.min_throttle_percent +
+        ((float)(current_step - 1) / (test_config.total_steps - 1)) *
+        (test_config.max_throttle_percent - test_config.min_throttle_percent);
+    }
+
     // Start smooth acceleration to new throttle
-    motor.setThrottle(throttle, true, step_accel_time_ms);
+    motor.setThrottle(throttle, true, test_config.step_accel_time_ms);
 
     reset_stats(); // Reset statistics for the new step
   }
 }
 
-void abort_test() {
+void abort_test(bool thermal_abort) {
   if (current_step < 0) {
     DEBUG_println(FST("# No test running to abort."));
     return;
   }
   
-  DEBUG_println(FST("\n# Test aborted!"));
+  if (thermal_abort) {
+    DEBUG_println(FST("\n# Test aborted due to thermal limit."));
+  } else {
+    if (abort_reason.length() == 0) {
+      abort_reason = "Manual abort";
+    }
+    DEBUG_println(FST("\n# Test aborted!"));
+  }
   
   // Stop motor with smooth deceleration
-  motor.stop(true, decel_time_ms);
+  motor.stop(true, test_config.decel_time_ms);
   
   // Consider printing the results we have so far
   print_csv_results();

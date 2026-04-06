@@ -33,3 +33,8 @@ void   web_throttle_clear();
 
 // Credential management (also callable from serial command 'w')
 void web_wifi_clear_credentials();
+
+// Test configuration persistence
+bool web_load_test_config(test_config_t* cfg);
+bool web_save_test_config(const test_config_t* cfg);
+void web_reset_test_config();

@@ -356,10 +356,11 @@ void get_stats(test_data_t* data){
     }
     
     // Thermal — store per-step max and ambient values
-    data->thermal_max   = thermal_max_step;
-    data->thermal_valid = thermal_had_valid_frame;
+    data->thermal_max     = thermal_max_step;
+    data->thermal_ambient = sensor_temp_step;
+    data->thermal_valid   = thermal_had_valid_frame;
+    data->thermal_abort   = false;
 
-    
     // Add RPM values from the global variables
     data->rpm = rpm_sensor.getRPM();
     

@@ -191,6 +191,38 @@ No.| GPIO | IO | RTC | ADC | Default   | Function
 #define THERMAL_STALE_MS        2000
 
 /********************************************\
+|*  Test Configuration
+\********************************************/
+
+typedef struct {
+    unsigned int total_steps;            // Number of steps in the test ramp
+    unsigned long step_time_ms;          // Dwell time per step
+    unsigned long step_accel_time_ms;    // Ramp time between steps
+    unsigned long decel_time_ms;         // Time to decelerate after test
+    float min_throttle_percent;          // First step throttle percentage
+    float max_throttle_percent;          // Final step throttle percentage
+    float max_temp_limit_celsius;       // Thermal abort limit
+} test_config_t;
+
+#define TEST_CONFIG_DEFAULT_TOTAL_STEPS         20u
+#define TEST_CONFIG_DEFAULT_STEP_TIME_MS        2000ul
+#define TEST_CONFIG_DEFAULT_STEP_ACCEL_TIME_MS  1000ul
+#define TEST_CONFIG_DEFAULT_DECEL_TIME_MS       3000ul
+#define TEST_CONFIG_DEFAULT_MIN_THROTTLE_PERCENT 5.0f
+#define TEST_CONFIG_DEFAULT_MAX_THROTTLE_PERCENT 100.0f
+#define TEST_CONFIG_DEFAULT_MAX_TEMP_LIMIT_CELSIUS 85.0f
+
+#define TEST_CONFIG_DEFAULTS { \
+    TEST_CONFIG_DEFAULT_TOTAL_STEPS, \
+    TEST_CONFIG_DEFAULT_STEP_TIME_MS, \
+    TEST_CONFIG_DEFAULT_STEP_ACCEL_TIME_MS, \
+    TEST_CONFIG_DEFAULT_DECEL_TIME_MS, \
+    TEST_CONFIG_DEFAULT_MIN_THROTTLE_PERCENT, \
+    TEST_CONFIG_DEFAULT_MAX_THROTTLE_PERCENT, \
+    TEST_CONFIG_DEFAULT_MAX_TEMP_LIMIT_CELSIUS \
+}
+
+/********************************************\
 |*  Wi-Fi Configuration
 \********************************************/
 #include "secrets.h"   // WiFi AP credentials (edit secrets.h, not this file)

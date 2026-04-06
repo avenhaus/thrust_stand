@@ -16,7 +16,8 @@
 //  Forward declarations — command functions defined in main.cpp
 // ---------------------------------------------------------------------------
 extern int          current_step;
-extern unsigned int total_steps;
+extern String       abort_reason;
+extern test_config_t test_config;
 extern test_data_t  test_data[];
 extern float        rpm;
 extern MotorESC     motor;
@@ -175,7 +176,7 @@ static void _handleStatus(AsyncWebServerRequest* req) {
     // Test
     doc["testRunning"]  = (current_step >= 0);
     doc["currentStep"]  = current_step;
-    doc["totalSteps"]   = total_steps;
+    doc["totalSteps"]   = test_config.total_steps;
 
     // Sensors
     doc["thrust"]   = lc_value_1;
@@ -189,6 +190,7 @@ static void _handleStatus(AsyncWebServerRequest* req) {
     doc["thermalAvailable"] = thermal_is_available();
     doc["thermalMax"]       = thermal_get_frame_max();
     doc["thermalFrameAge"]  = thermal_get_frame_age_ms();
+    doc["abortReason"]      = abort_reason;
 
     // Heap
     doc["freeHeap"] = ESP.getFreeHeap();
@@ -256,7 +258,7 @@ static void _handleTare(AsyncWebServerRequest* req) {
 static void _handleTestResults(AsyncWebServerRequest* req) {
     JsonDocument doc;
     JsonArray steps = doc["steps"].to<JsonArray>();
-    for (unsigned int i = 0; i <= total_steps; i++) {
+    for (unsigned int i = 0; i <= test_config.total_steps; i++) {
         if (test_data[i].throttle == 0 && test_data[i].lc_samples == 0) continue;
         JsonObject s = steps.add<JsonObject>();
         s["step"]       = i;
@@ -268,12 +270,13 @@ static void _handleTestResults(AsyncWebServerRequest* req) {
         s["power"]      = test_data[i].power;
         s["rpm"]        = test_data[i].rpm;
         s["thermalMax"] = test_data[i].thermal_max;
-
-        s["thermalValid"]= test_data[i].thermal_valid;
-        float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
-        s["efficiency"]  = eff;
-        s["lcSamples"]   = test_data[i].lc_samples;
-        s["sensorSamples"] = test_data[i].sensor_samples;
+    s["thermalAmbient"] = test_data[i].thermal_ambient;
+    s["thermalValid"] = test_data[i].thermal_valid;
+    s["thermalAbort"] = test_data[i].thermal_abort;
+    float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
+    s["efficiency"]  = eff;
+    s["lcSamples"]   = test_data[i].lc_samples;
+    s["sensorSamples"] = test_data[i].sensor_samples;
     }
     String out;
     serializeJson(doc, out);
@@ -281,21 +284,25 @@ static void _handleTestResults(AsyncWebServerRequest* req) {
 }
 
 static void _handleTestCSV(AsyncWebServerRequest* req) {
-    String csv = "Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples\n";
-    for (unsigned int i = 0; i <= total_steps; i++) {
+    String csv = "Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Thermal_Valid,Thermal_Abort,Efficiency(g/W),LC_Samples,Sensor_Samples\n";
+    for (unsigned int i = 0; i <= test_config.total_steps; i++) {
         if (test_data[i].throttle == 0 && test_data[i].lc_samples == 0) continue;
         float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
         char row[256];
         snprintf(row, sizeof(row),
-            "%u,%.2f,%.2f,%.2f,%.2f,%.3f,%.2f,%.0f,%.2f,%.2f,%d,%.2f,%u,%u\n",
+            "%u,%.2f,%.2f,%.2f,%.2f,%.3f,%.2f,%.0f,%.2f,%d,%d,%.2f,%u,%u\n",
             i, test_data[i].throttle, test_data[i].thrust, test_data[i].torque,
             test_data[i].voltage, test_data[i].current, test_data[i].power,
             test_data[i].rpm, test_data[i].thermal_max,
-            test_data[i].thermal_valid ? 1 : 0, eff,
+            test_data[i].thermal_valid ? 1 : 0,
+            test_data[i].thermal_abort ? 1 : 0,
+            eff,
             test_data[i].lc_samples, test_data[i].sensor_samples);
         csv += row;
     }
-    req->send(200, "text/csv", csv);
+    AsyncWebServerResponse* response = req->beginResponse(200, "text/csv", csv);
+    response->addHeader("Content-Disposition", "attachment; filename=thrust_data.csv");
+    req->send(response);
 }
 
 static void _handleWiFiStatus(AsyncWebServerRequest* req) {
@@ -347,6 +354,117 @@ static void _handleWiFiCredentials(AsyncWebServerRequest* req) {
 static void _handleWiFiClear(AsyncWebServerRequest* req) {
     web_wifi_clear_credentials();
     req->send(200, "application/json", "{\"ok\":true,\"message\":\"Credentials cleared. Reboot to enter AP mode.\"}");
+}
+
+// ---------------------------------------------------------------------------
+//  Test Configuration Handlers
+// ---------------------------------------------------------------------------
+
+static const char* TEST_CFG_BLOB_KEY = "test_cfg";
+
+static bool _isValidTestConfig(const test_config_t& cfg) {
+    if (cfg.total_steps == 0 || cfg.total_steps > 100) return false;
+    if (cfg.step_time_ms < 100) return false;
+    if (cfg.step_accel_time_ms == 0) return false;
+    if (cfg.decel_time_ms == 0) return false;
+    if (cfg.min_throttle_percent < 0.0f || cfg.max_throttle_percent > 100.0f) return false;
+    if (cfg.min_throttle_percent >= cfg.max_throttle_percent) return false;
+    if (cfg.max_temp_limit_celsius <= 0.0f) return false;
+    return true;
+}
+
+static bool _loadTestConfig(test_config_t* cfg) {
+    if (!cfg) return false;
+
+    *cfg = (test_config_t)TEST_CONFIG_DEFAULTS;
+    _prefs.begin("thrust_stand", true);
+    size_t len = _prefs.getBytesLength(TEST_CFG_BLOB_KEY);
+    bool loaded = false;
+    if (len == sizeof(test_config_t)) {
+        loaded = (_prefs.getBytes(TEST_CFG_BLOB_KEY, (uint8_t*)cfg, sizeof(test_config_t)) == sizeof(test_config_t));
+    }
+    _prefs.end();
+
+    if (!loaded) return true; // Defaults already applied
+
+    if (!_isValidTestConfig(*cfg)) {
+        DEBUG_println(FST("# WARNING: Stored test config invalid; reverting to defaults."));
+        *cfg = (test_config_t)TEST_CONFIG_DEFAULTS;
+    }
+    return true;
+}
+
+static bool _saveTestConfig(const test_config_t* cfg) {
+    if (!cfg) return false;
+    if (!_isValidTestConfig(*cfg)) return false;
+
+    _prefs.begin("thrust_stand", false);
+    bool ok = (_prefs.putBytes(TEST_CFG_BLOB_KEY, (const uint8_t*)cfg, sizeof(test_config_t)) == sizeof(test_config_t));
+    _prefs.end();
+
+    if (!ok) {
+        DEBUG_println(FST("# ERROR: Failed to persist test config blob to NVS."));
+    }
+    return ok;
+}
+
+static void _handleResetTestConfig(AsyncWebServerRequest* req) {
+    test_config = (test_config_t)TEST_CONFIG_DEFAULTS;
+    _saveTestConfig(&test_config);
+    req->send(200, "application/json", "{\"ok\":true,\"message\":\"Test config reset to defaults.\"}");
+}
+
+static void _handleGetTestConfig(AsyncWebServerRequest* req) {
+    JsonDocument doc;
+    doc["totalSteps"] = test_config.total_steps;
+    doc["stepTimeMs"] = test_config.step_time_ms;
+    doc["stepAccelTimeMs"] = test_config.step_accel_time_ms;
+    doc["decelTimeMs"] = test_config.decel_time_ms;
+    doc["minThrottlePercent"] = test_config.min_throttle_percent;
+    doc["maxThrottlePercent"] = test_config.max_throttle_percent;
+    doc["maxTempLimitCelsius"] = test_config.max_temp_limit_celsius;
+    String out;
+    serializeJson(doc, out);
+    req->send(200, "application/json", out);
+}
+
+static void _handleSetTestConfig(AsyncWebServerRequest* req, JsonVariant& doc) {
+    if (!doc.is<JsonObject>()) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Expected JSON object\"}");
+        return;
+    }
+    JsonObject obj = doc.as<JsonObject>();
+    if (!obj.containsKey("totalSteps") || !obj.containsKey("stepTimeMs") ||
+        !obj.containsKey("stepAccelTimeMs") || !obj.containsKey("decelTimeMs") ||
+        !obj.containsKey("minThrottlePercent") || !obj.containsKey("maxThrottlePercent") ||
+        !obj.containsKey("maxTempLimitCelsius")) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Missing required test config fields\"}");
+        return;
+    }
+
+    test_config_t updated = {
+        obj["totalSteps"].as<unsigned int>(),
+        obj["stepTimeMs"].as<unsigned long>(),
+        obj["stepAccelTimeMs"].as<unsigned long>(),
+        obj["decelTimeMs"].as<unsigned long>(),
+        obj["minThrottlePercent"].as<float>(),
+        obj["maxThrottlePercent"].as<float>(),
+        obj["maxTempLimitCelsius"].as<float>()
+    };
+
+    if (updated.total_steps == 0 || updated.total_steps > 100 || updated.step_time_ms < 100 || updated.step_accel_time_ms == 0 ||
+        updated.decel_time_ms == 0 || updated.min_throttle_percent < 0.0f || updated.max_throttle_percent > 100.0f ||
+        updated.min_throttle_percent >= updated.max_throttle_percent || updated.max_temp_limit_celsius <= 0.0f) {
+        req->send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid test configuration values\"}");
+        return;
+    }
+
+    test_config = updated;
+    if (_saveTestConfig(&test_config)) {
+        req->send(200, "application/json", "{\"ok\":true,\"message\":\"Test configuration saved\"}");
+    } else {
+        req->send(500, "application/json", "{\"ok\":false,\"error\":\"Failed to write configuration to NVS\"}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -495,8 +613,9 @@ static void _pushTelemetry() {
 
     doc["testRunning"] = (current_step >= 0);
     doc["currentStep"] = current_step;
-    doc["totalSteps"]  = total_steps;
+    doc["totalSteps"]  = test_config.total_steps;
     doc["freeHeap"]    = ESP.getFreeHeap();
+    doc["abortReason"] = abort_reason;
 
     String out;
     serializeJson(doc, out);
@@ -541,13 +660,16 @@ void web_init() {
     _server.on("/api/sensors/tare",    HTTP_POST, _handleTare);
     _server.on("/api/test/results",    HTTP_GET,  _handleTestResults);
     _server.on("/api/test/csv",        HTTP_GET,  _handleTestCSV);
+    _server.on("/api/test/config",     HTTP_GET,  _handleGetTestConfig);
+    _server.addHandler(new AsyncCallbackJsonWebHandler("/api/test/config", _handleSetTestConfig));
+    _server.on("/api/test/config/reset", HTTP_POST, _handleResetTestConfig);
     _server.on("/api/wifi/status",     HTTP_GET,  _handleWiFiStatus);
     _server.on("/api/wifi/credentials",HTTP_POST, _handleWiFiCredentials);
     _server.on("/api/wifi/clear",      HTTP_POST, _handleWiFiClear);
     
     // --- Calibration API ---
     _server.on("/api/calibration",           HTTP_GET,  _handleGetCalibration);
-    _server.on("/api/calibration",           HTTP_POST, _handleSetCalibrationJson);
+    _server.addHandler(new AsyncCallbackJsonWebHandler("/api/calibration", _handleSetCalibrationJson));
     _server.on("/api/calibration/reset",     HTTP_POST, _handleResetCalibration);
     _server.on("/api/calibration/ina226-scan", HTTP_POST, _handleINA226Scan);
 
@@ -620,4 +742,19 @@ float web_throttle_get_value() {
 void web_throttle_clear() {
     _webThrottleActive = false;
     _webThrottleValue  = 0.0f;
+}
+
+bool web_load_test_config(test_config_t* cfg) {
+    return _loadTestConfig(cfg);
+}
+
+bool web_save_test_config(const test_config_t* cfg) {
+    if (!cfg) return false;
+    test_config = *cfg;
+    return _saveTestConfig(cfg);
+}
+
+void web_reset_test_config() {
+    test_config = (test_config_t)TEST_CONFIG_DEFAULTS;
+    _saveTestConfig(&test_config);
 }
