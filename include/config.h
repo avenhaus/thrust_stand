@@ -236,6 +236,7 @@ typedef struct {
 #define WEB_THROTTLE_TIMEOUT_MS  5000    // 5 s heartbeat timeout for manual web throttle
 #define WEB_TELEMETRY_INTERVAL_MS 100    // ~10 Hz telemetry push
 #define WEB_THERMAL_INTERVAL_MS   125    // ~8 Hz thermal frame push
+#define THERMAL_UPDATE_INTERVAL_MS 1000  // Thermal sensor acquisition interval
 
 // Heap safety margin — throttle thermal rate if free heap drops below this
 #define HEAP_SAFETY_MARGIN_BYTES  30000

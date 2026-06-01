@@ -45,7 +45,8 @@ static float         _webThrottleValue  = 0.0f;
 static unsigned long _webThrottleLastHB = 0;
 
 static unsigned long _lastTelemetryMs = 0;
-static unsigned long _lastThermalMs   = 0;
+static unsigned long _lastThermalMs       = 0;
+static unsigned long _lastThermalUpdateMs = 0;
 
 // ---------------------------------------------------------------------------
 //  Wi-Fi credential helpers
@@ -687,6 +688,16 @@ void web_loop() {
     if (now - _lastTelemetryMs >= WEB_TELEMETRY_INTERVAL_MS) {
         _lastTelemetryMs = now;
         _pushTelemetry();
+    }
+
+    // Update thermal readings at a lower frequency to avoid blocking the sensor loop.
+    unsigned long thermalUpdateInterval = THERMAL_UPDATE_INTERVAL_MS;
+    if (ESP.getFreeHeap() < HEAP_SAFETY_MARGIN_BYTES) {
+        thermalUpdateInterval *= 4;  // reduce thermal acquisition under memory pressure
+    }
+    if (now - _lastThermalUpdateMs >= thermalUpdateInterval) {
+        _lastThermalUpdateMs = now;
+        thermal_update();
     }
 
     // Push thermal frame at configured rate (throttle if heap is low)

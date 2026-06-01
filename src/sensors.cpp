@@ -167,8 +167,10 @@ bool run_sensors(bool update_stats) {
   bool newDataReady = false;
 
   // check for new data/start next conversion:
-  if (LoadCell_1.update()) newDataReady = true;
-  LoadCell_2.update();
+  bool lc1 = LoadCell_1.update();
+  if (lc1) newDataReady = true;
+
+  bool lc2 = LoadCell_2.update();
 
   //get smoothed value from data set
   if (newDataReady) {
@@ -192,9 +194,8 @@ bool run_sensors(bool update_stats) {
 
   rpm = rpm_sensor.update(); // Update RPM sensor
 
-  // Update thermal sensor (non-blocking)
-  thermal_update();
-
+  // Thermal frame acquisition is handled separately in the web server loop so
+  // it doesn't block the main sensor sampling/update path.
   if (update_stats) {
     sensor_value_count++; // Increment the counter for number of values read from sensors
     bus_voltage_sum += bus_voltage; // Add the current bus voltage value to the sum
@@ -211,7 +212,6 @@ bool run_sensors(bool update_stats) {
       sensor_temp_step = thermal_get_frame_ambient();
     }
   }
-
 
   return newDataReady; // return true if new data is ready
 }
