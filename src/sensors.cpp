@@ -119,7 +119,9 @@ bool init_sensors(boolean tare) {
   LoadCell_1.begin();
   LoadCell_2.begin();
 
-  // Set gain for HX711 (default is 128).
+  // Set gain for HX711 (default is 128, which yields ~10 SPS).
+  // If you need many more raw load cell samples per step, you must use
+  // a faster HX711 channel/rate or a different sensor path.
   LoadCell_1.setGain(128);
   LoadCell_2.setGain(128);
 
@@ -162,14 +164,14 @@ bool init_sensors(boolean tare) {
 }
     
 bool run_sensors(bool update_stats) { 
-  static boolean newDataReady = 0;
+  bool newDataReady = false;
 
   // check for new data/start next conversion:
   if (LoadCell_1.update()) newDataReady = true;
   LoadCell_2.update();
 
   //get smoothed value from data set
-  if ((newDataReady)) {
+  if (newDataReady) {
       lc_value_1 = LoadCell_1.getData();
       lc_value_2 = LoadCell_2.getData();
 

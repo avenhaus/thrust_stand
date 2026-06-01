@@ -97,19 +97,15 @@ MotorESC::MotorState MotorESC::run() {
             float progress = (float)elapsed / _transitionDuration;
             float throttle = 0.0f;
             
+            const float PI_F = 3.14159265f;
+            float easeInOut = (1.0f - cosf(progress * PI_F)) * 0.5f;
+
             if (_state == STATE_ACCELERATING) {
-                // Linear acceleration
-                throttle = _startThrottle + (_targetThrottle - _startThrottle) * progress;
-                
-                // Alternative: Smooth acceleration using easing function (smoother start and end)
-                // float easeInOut = (1.0 - cos(progress * M_PI)) / 2.0;
-                // float throttle = _startThrottle + (_targetThrottle - _startThrottle) * easeInOut                
+                // Smooth acceleration using a cosine ease-in/out curve
+                throttle = _startThrottle + (_targetThrottle - _startThrottle) * easeInOut;
             } else { // STATE_DECELERATING
-                // Linear deceleration
-                throttle = _startThrottle * (1.0 - progress);
-                
-                // Alternative: Exponential deceleration
-                // float throttle = _startThrottle * exp(-5.0 * progress);                
+                // Smooth deceleration using a cosine ease-in/out curve
+                throttle = _startThrottle * (1.0f - easeInOut);
             }
 
             setThrottle(throttle, false);

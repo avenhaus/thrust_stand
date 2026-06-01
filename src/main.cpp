@@ -3,6 +3,7 @@
 // Graph of test results with Plotly.js or similar 
 // Add support for multiple test profiles with different step configs and names. 
 // Add motor specs: Brand Size, KV, Propeller to include in CSV and download file name. add timestamp to CSV contents. Add input fields in test control pane.
+// Support loading old CSV test results files and displaying them in the web UI with the same graphs as live data.
 
 /*======================================================================*\
  * ESP32 Thrust Stand
@@ -125,7 +126,11 @@ void loop() {
   // Run the motor control loop to handle acceleration/deceleration
   motor.run();
 
-  boolean new_data = run_sensors(step_start_ts >= millis());
+  // For step 0 (idle baseline) we want to sample for the full step_time_ms
+  // (start_test sets step_start_ts to the end of the idle period). For
+  // all other steps, only enable stats after the accel/settle window has
+  // elapsed (i.e. when millis() >= step_start_ts).
+  boolean new_data = run_sensors(current_step == 0 || millis() >= step_start_ts);
  
   if ((new_data)) {
     if (millis() > t + 100) {
@@ -249,7 +254,7 @@ void start_test() {
   reset_stats(); // Reset statistics before starting the test
   current_step = 0;
   // Step 0: idle baseline — sample for the full step_time_ms at 0% throttle.
-  // step_start_ts in the future keeps the run_sensors() sampling gate open.
+  // step_start_ts is set to the end of the idle step; idle baseline uses a special-case sample gate.
   step_start_ts = millis() + test_config.step_time_ms;
   step_end_ts   = millis() + test_config.step_time_ms;
 
@@ -280,7 +285,7 @@ void print_stats(const test_data_t& data) {
 void print_csv_results() {
   // Print CSV header
   Serial.println(F("\n\n*** TEST RESULTS CSV DATA ***\n"));
-  Serial.println(F("Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Thermal_Valid,Thermal_Abort,Efficiency(g/W),LC_Samples,Sensor_Samples"));
+  Serial.println(F("Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Efficiency(g/W),LC_Samples,Sensor_Samples"));
   
   // Print data rows
   for (unsigned int i = 0; i <= test_config.total_steps; i++) {
@@ -315,10 +320,6 @@ void print_csv_results() {
     Serial.print(test_data[i].rpm, 0);
     Serial.print(F(","));
     Serial.print(test_data[i].thermal_max, 2);
-    Serial.print(F(","));
-    Serial.print(test_data[i].thermal_valid ? 1 : 0);
-    Serial.print(F(","));
-    Serial.print(test_data[i].thermal_abort ? 1 : 0);
     Serial.print(F(","));
     Serial.print(efficiency, 2);
     Serial.print(F(","));
@@ -371,7 +372,7 @@ void run_test() {
       return;
     }
 
-    step_start_ts = millis() + test_config.step_accel_time_ms + 100; // sampling gate: open during accel
+    step_start_ts = millis() + test_config.step_accel_time_ms + 100; // sampling gate: open after accel/settle
     step_end_ts   = step_start_ts + test_config.step_time_ms;          // step ends after accel + hold
     // Steps 1..total_steps ramp linearly from min to max throttle.
     // (current_step-1)/(total_steps-1) maps step 1→min and step total_steps→max.

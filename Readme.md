@@ -139,7 +139,7 @@ After a completed or aborted test, the firmware prints a CSV block headed by:
 The current row format is:
 
 ```text
-Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Thermal_Valid,Efficiency(g/W),LC_Samples,Sensor_Samples
+Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Efficiency(g/W),LC_Samples,Sensor_Samples
 ```
 
 This output is intended to be copied into a spreadsheet or analysis script.

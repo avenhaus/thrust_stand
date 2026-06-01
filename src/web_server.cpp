@@ -284,18 +284,16 @@ static void _handleTestResults(AsyncWebServerRequest* req) {
 }
 
 static void _handleTestCSV(AsyncWebServerRequest* req) {
-    String csv = "Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Thermal_Valid,Thermal_Abort,Efficiency(g/W),LC_Samples,Sensor_Samples\n";
+    String csv = "Step,Throttle(%),Thrust(g),Torque(g·cm),Voltage(V),Current(A),Power(W),RPM,Thermal_Max(C),Efficiency(g/W),LC_Samples,Sensor_Samples\n";
     for (unsigned int i = 0; i <= test_config.total_steps; i++) {
         if (test_data[i].throttle == 0 && test_data[i].lc_samples == 0) continue;
         float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
         char row[256];
         snprintf(row, sizeof(row),
-            "%u,%.2f,%.2f,%.2f,%.2f,%.3f,%.2f,%.0f,%.2f,%d,%d,%.2f,%u,%u\n",
+            "%u,%.2f,%.2f,%.2f,%.2f,%.3f,%.2f,%.0f,%.2f,%.2f,%u,%u\n",
             i, test_data[i].throttle, test_data[i].thrust, test_data[i].torque,
             test_data[i].voltage, test_data[i].current, test_data[i].power,
             test_data[i].rpm, test_data[i].thermal_max,
-            test_data[i].thermal_valid ? 1 : 0,
-            test_data[i].thermal_abort ? 1 : 0,
             eff,
             test_data[i].lc_samples, test_data[i].sensor_samples);
         csv += row;
