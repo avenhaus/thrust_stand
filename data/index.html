@@ -83,6 +83,7 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
     <div class="row"><span class="lbl">Current</span><span class="val" id="v-current">-- A</span></div>
     <div class="row"><span class="lbl">Power</span><span class="val" id="v-power">-- W</span></div>
     <div class="row"><span class="lbl">RPM</span><span class="val" id="v-rpm">--</span></div>
+    <div class="row"><span class="lbl">KV</span><span class="val" id="v-kv">-- RPM/V</span></div>
     <div class="row"><span class="lbl">Thermal Max</span><span class="val" id="v-thermal-max">-- °C</span></div>
     <div class="row"><span class="lbl">Thermal Sensor</span><span class="val" id="v-sensor-temp">-- °C</span></div>
     <div class="row"><span class="lbl">Test</span><span class="val" id="v-test">Idle</span></div>
@@ -99,6 +100,7 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
       <button id="btn-abort" onclick="apiPost('/api/test/abort')" disabled>Abort Test</button>
       <button class="danger" onclick="apiPost('/api/motor/stop')">STOP Motor</button>
       <button onclick="tareSensors()" id="btn-tare">Tare Sensors</button>
+      <button id="btn-measure-kv" onclick="measureKV()">Measure KV</button>
     </div>
     <div style="margin-top:12px">
       <label style="display:flex;align-items:center;gap:8px">
@@ -118,6 +120,7 @@ th{color:#00d4ff;position:sticky;top:0;background:#16213e}
         <span class="lbl">Decel Time (ms)</span><input type="text" id="cfg-decel-time" placeholder="3000">
         <span class="lbl">Min Throttle (%)</span><input type="text" id="cfg-min-throttle" placeholder="30">
         <span class="lbl">Max Throttle (%)</span><input type="text" id="cfg-max-throttle" placeholder="100">
+        <span class="lbl">KV Throttle (%)</span><input type="text" id="cfg-kv-throttle" placeholder="50">
         <span class="lbl">Max Temp (°C)</span>  <input type="text" id="cfg-max-temp" placeholder="85">
       </div>
       <div class="btn-row" style="margin-top:8px">
@@ -506,6 +509,7 @@ function fetchTestConfig() {
     document.getElementById('cfg-decel-time').value = d.decelTimeMs;
     document.getElementById('cfg-min-throttle').value = d.minThrottlePercent;
     document.getElementById('cfg-max-throttle').value = d.maxThrottlePercent;
+    document.getElementById('cfg-kv-throttle').value = d.kvThrottlePercent;
     document.getElementById('cfg-max-temp').value = d.maxTempLimitCelsius;
     showConfigStatus('Loaded current test configuration.', 'ok');
   }).catch(err => {
@@ -522,6 +526,7 @@ function saveTestConfig() {
     decelTimeMs: parseInt(document.getElementById('cfg-decel-time').value, 10),
     minThrottlePercent: parseFloat(document.getElementById('cfg-min-throttle').value),
     maxThrottlePercent: parseFloat(document.getElementById('cfg-max-throttle').value),
+    kvThrottlePercent: parseFloat(document.getElementById('cfg-kv-throttle').value),
     maxTempLimitCelsius: parseFloat(document.getElementById('cfg-max-temp').value)
   };
 
@@ -657,6 +662,45 @@ function runINA226Scan() {
     btn.disabled = false;
     btn.textContent = 'Run INA226 Scan';
   });
+}
+
+// --- KV measurement ---
+function measureKV() {
+  const btn = document.getElementById('btn-measure-kv');
+  btn.disabled = true;
+  btn.textContent = 'Measuring...';
+  // Start measurement then poll for result
+  fetch('/api/motor/measure_kv', {method:'POST'})
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) throw new Error(d.error || 'Failed to start');
+      // poll for result every 800ms
+      const poll = setInterval(() => {
+        fetch('/api/motor/measure_kv').then(r=>r.json()).then(res => {
+          if (!res.in_progress) {
+            clearInterval(poll);
+            if (res.ok) {
+              document.getElementById('v-kv').textContent = (Number(res.kv)||0).toFixed(1) + ' RPM/V';
+              if (Number.isFinite(res.rpm_avg)) document.getElementById('v-rpm').textContent = Math.round(res.rpm_avg);
+              if (Number.isFinite(res.voltage_avg)) document.getElementById('v-voltage').textContent = res.voltage_avg.toFixed(2) + ' V';
+            } else {
+              alert('KV result error');
+            }
+            btn.disabled = false;
+            btn.textContent = 'Measure KV';
+          }
+        }).catch(err => {
+          clearInterval(poll);
+          btn.disabled = false;
+          btn.textContent = 'Measure KV';
+          alert('KV poll error: ' + err.message);
+        });
+      }, 800);
+    }).catch(err => {
+      btn.disabled = false;
+      btn.textContent = 'Measure KV';
+      alert('KV measurement start error: ' + err.message);
+    });
 }
 
 function saveCalibration() {

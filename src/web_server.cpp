@@ -21,6 +21,12 @@ extern test_config_t test_config;
 extern test_data_t  test_data[];
 extern float        rpm;
 extern MotorESC     motor;
+// Expose KV measurement routines implemented in main.cpp
+bool start_kv_measure(float measure_throttle, unsigned long spinup_ms, unsigned long sample_ms);
+bool kv_measure_active();
+float kv_measure_last_rpm();
+float kv_measure_last_bv();
+float kv_measure_last_kv();
 
 bool cmd_start_test();
 bool cmd_abort_test();
@@ -257,11 +263,12 @@ static void _handleTare(AsyncWebServerRequest* req) {
 }
 
 static void _handleTestResults(AsyncWebServerRequest* req) {
-    JsonDocument doc;
-    JsonArray steps = doc["steps"].to<JsonArray>();
+    // Use a dynamic document with enough capacity for the steps array
+    DynamicJsonDocument doc(4096);
+    JsonArray steps = doc.createNestedArray("steps");
     for (unsigned int i = 0; i <= test_config.total_steps; i++) {
         if (test_data[i].throttle == 0 && test_data[i].lc_samples == 0) continue;
-        JsonObject s = steps.add<JsonObject>();
+        JsonObject s = steps.createNestedObject();
         s["step"]       = i;
         s["throttle"]   = test_data[i].throttle;
         s["thrust"]     = test_data[i].thrust;
@@ -271,13 +278,13 @@ static void _handleTestResults(AsyncWebServerRequest* req) {
         s["power"]      = test_data[i].power;
         s["rpm"]        = test_data[i].rpm;
         s["thermalMax"] = test_data[i].thermal_max;
-    s["thermalAmbient"] = test_data[i].thermal_ambient;
-    s["thermalValid"] = test_data[i].thermal_valid;
-    s["thermalAbort"] = test_data[i].thermal_abort;
-    float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
-    s["efficiency"]  = eff;
-    s["lcSamples"]   = test_data[i].lc_samples;
-    s["sensorSamples"] = test_data[i].sensor_samples;
+        s["thermalAmbient"] = test_data[i].thermal_ambient;
+        s["thermalValid"] = test_data[i].thermal_valid;
+        s["thermalAbort"] = test_data[i].thermal_abort;
+        float eff = (test_data[i].power > 0) ? test_data[i].thrust / (test_data[i].power / 1000.0f) : 0.0f;
+        s["efficiency"]  = eff;
+        s["lcSamples"]   = test_data[i].lc_samples;
+        s["sensorSamples"] = test_data[i].sensor_samples;
     }
     String out;
     serializeJson(doc, out);
@@ -422,6 +429,7 @@ static void _handleGetTestConfig(AsyncWebServerRequest* req) {
     doc["minThrottlePercent"] = test_config.min_throttle_percent;
     doc["maxThrottlePercent"] = test_config.max_throttle_percent;
     doc["maxTempLimitCelsius"] = test_config.max_temp_limit_celsius;
+    doc["kvThrottlePercent"] = test_config.kv_throttle_percent;
     String out;
     serializeJson(doc, out);
     req->send(200, "application/json", out);
@@ -436,7 +444,7 @@ static void _handleSetTestConfig(AsyncWebServerRequest* req, JsonVariant& doc) {
     if (!obj.containsKey("totalSteps") || !obj.containsKey("stepTimeMs") ||
         !obj.containsKey("stepAccelTimeMs") || !obj.containsKey("decelTimeMs") ||
         !obj.containsKey("minThrottlePercent") || !obj.containsKey("maxThrottlePercent") ||
-        !obj.containsKey("maxTempLimitCelsius")) {
+        !obj.containsKey("maxTempLimitCelsius") || !obj.containsKey("kvThrottlePercent")) {
         req->send(400, "application/json", "{\"ok\":false,\"error\":\"Missing required test config fields\"}");
         return;
     }
@@ -448,12 +456,14 @@ static void _handleSetTestConfig(AsyncWebServerRequest* req, JsonVariant& doc) {
         obj["decelTimeMs"].as<unsigned long>(),
         obj["minThrottlePercent"].as<float>(),
         obj["maxThrottlePercent"].as<float>(),
-        obj["maxTempLimitCelsius"].as<float>()
+        obj["maxTempLimitCelsius"].as<float>(),
+        obj["kvThrottlePercent"].as<float>()
     };
 
     if (updated.total_steps == 0 || updated.total_steps > 100 || updated.step_time_ms < 100 || updated.step_accel_time_ms == 0 ||
         updated.decel_time_ms == 0 || updated.min_throttle_percent < 0.0f || updated.max_throttle_percent > 100.0f ||
-        updated.min_throttle_percent >= updated.max_throttle_percent || updated.max_temp_limit_celsius <= 0.0f) {
+        updated.min_throttle_percent >= updated.max_throttle_percent || updated.max_temp_limit_celsius <= 0.0f ||
+        updated.kv_throttle_percent < 0.0f || updated.kv_throttle_percent > 100.0f) {
         req->send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid test configuration values\"}");
         return;
     }
@@ -656,6 +666,42 @@ void web_init() {
     _server.on("/api/test/abort",      HTTP_POST, _handleTestAbort);
     _server.on("/api/motor/stop",      HTTP_POST, _handleMotorStop);
     _server.on("/api/motor/throttle",  HTTP_POST, _handleMotorThrottle);
+    _server.on("/api/motor/measure_kv", HTTP_POST, [](AsyncWebServerRequest* req){
+        // Start background KV measurement using configured throttle
+        bool ok = start_kv_measure(test_config.kv_throttle_percent, 2000, 5000);
+        JsonDocument doc;
+        if (ok) {
+            doc["ok"] = true;
+            doc["in_progress"] = true;
+            String out; serializeJson(doc, out);
+            req->send(200, "application/json", out);
+        } else {
+            doc["ok"] = false;
+            doc["error"] = "Busy or measurement failed to start";
+            String out; serializeJson(doc, out);
+            req->send(409, "application/json", out);
+        }
+    });
+
+    // GET returns latest result or in_progress
+    _server.on("/api/motor/measure_kv", HTTP_GET, [](AsyncWebServerRequest* req){
+        JsonDocument doc;
+        if (kv_measure_active()) {
+            doc["ok"] = false;
+            doc["in_progress"] = true;
+            String out; serializeJson(doc, out);
+            req->send(200, "application/json", out);
+            return;
+        }
+        // Not active — return last measured values if any
+        doc["ok"] = true;
+        doc["in_progress"] = false;
+        doc["rpm_avg"] = kv_measure_last_rpm();
+        doc["voltage_avg"] = kv_measure_last_bv();
+        doc["kv"] = kv_measure_last_kv();
+        String out; serializeJson(doc, out);
+        req->send(200, "application/json", out);
+    });
     _server.on("/api/sensors/tare",    HTTP_POST, _handleTare);
     _server.on("/api/test/results",    HTTP_GET,  _handleTestResults);
     _server.on("/api/test/csv",        HTTP_GET,  _handleTestCSV);

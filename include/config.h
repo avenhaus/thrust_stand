@@ -202,6 +202,7 @@ typedef struct {
     float min_throttle_percent;          // First step throttle percentage
     float max_throttle_percent;          // Final step throttle percentage
     float max_temp_limit_celsius;       // Thermal abort limit
+    float kv_throttle_percent;           // Throttle % to use for KV measurement
 } test_config_t;
 
 #define TEST_CONFIG_DEFAULT_TOTAL_STEPS         20u
@@ -211,6 +212,7 @@ typedef struct {
 #define TEST_CONFIG_DEFAULT_MIN_THROTTLE_PERCENT 5.0f
 #define TEST_CONFIG_DEFAULT_MAX_THROTTLE_PERCENT 100.0f
 #define TEST_CONFIG_DEFAULT_MAX_TEMP_LIMIT_CELSIUS 85.0f
+#define TEST_CONFIG_DEFAULT_KV_THROTTLE_PERCENT 50.0f
 
 #define TEST_CONFIG_DEFAULTS { \
     TEST_CONFIG_DEFAULT_TOTAL_STEPS, \
@@ -219,7 +221,8 @@ typedef struct {
     TEST_CONFIG_DEFAULT_DECEL_TIME_MS, \
     TEST_CONFIG_DEFAULT_MIN_THROTTLE_PERCENT, \
     TEST_CONFIG_DEFAULT_MAX_THROTTLE_PERCENT, \
-    TEST_CONFIG_DEFAULT_MAX_TEMP_LIMIT_CELSIUS \
+    TEST_CONFIG_DEFAULT_MAX_TEMP_LIMIT_CELSIUS, \
+    TEST_CONFIG_DEFAULT_KV_THROTTLE_PERCENT \
 }
 
 /********************************************\

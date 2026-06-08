@@ -61,6 +61,108 @@ test_data_t test_data[101] = {0};
 
 extern float rpm; // Current RPM value
 
+// KV measurement state (non-blocking)
+typedef struct {
+  bool active;
+  float measure_throttle;
+  unsigned long spinup_ms;
+  unsigned long sample_ms;
+  unsigned long phase_start_ms; // start of current phase
+  unsigned long sample_start_ms;
+  unsigned long samples;
+  float rpm_sum;
+  float bv_sum;
+  float last_rpm_avg;
+  float last_bv_avg;
+  float last_kv;
+} kv_measure_t;
+
+kv_measure_t kv_measure = {0};
+
+// Start a non-blocking KV measurement
+bool start_kv_measure(float throttle, unsigned long spinup_ms, unsigned long sample_ms) {
+  if (current_step >= 0) return false; // busy with test
+  if (kv_measure.active) return false; // already running
+  kv_measure.active = true;
+  kv_measure.measure_throttle = throttle;
+  // Ensure we ramp smoothly at the start of the test (3s), and make
+  // the spinup wait at least as long as the ramp to avoid sampling
+  // while the throttle is still changing.
+  const unsigned long ramp_ms = 3000;
+  kv_measure.spinup_ms = (spinup_ms > ramp_ms) ? spinup_ms : ramp_ms;
+  kv_measure.sample_ms = sample_ms;
+  kv_measure.phase_start_ms = millis();
+  kv_measure.sample_start_ms = 0;
+  kv_measure.samples = 0;
+  kv_measure.rpm_sum = 0.0f;
+  kv_measure.bv_sum = 0.0f;
+  kv_measure.last_kv = 0.0f;
+
+  // Ensure throttles cleared and then ramp throttle smoothly over 3s
+  analogThrottle = false;
+  web_throttle_clear();
+  motor.setThrottle(throttle, true, ramp_ms);
+  return true;
+}
+
+// Accessors for web server
+bool kv_measure_active() { return kv_measure.active; }
+float kv_measure_last_rpm() { return kv_measure.last_rpm_avg; }
+float kv_measure_last_bv() { return kv_measure.last_bv_avg; }
+float kv_measure_last_kv() { return kv_measure.last_kv; }
+
+// Poll function to run in main loop — performs spinup, sampling and finalization
+void kv_poll() {
+  if (!kv_measure.active) return;
+
+  unsigned long now = millis();
+  // Phase 1: spinup
+  if (kv_measure.sample_start_ms == 0) {
+    if (now - kv_measure.phase_start_ms >= kv_measure.spinup_ms) {
+      // begin sampling
+      kv_measure.sample_start_ms = now;
+      kv_measure.samples = 0;
+      kv_measure.rpm_sum = 0.0f;
+      kv_measure.bv_sum = 0.0f;
+    } else {
+      return;
+    }
+  }
+
+  // Phase 2: sampling — accumulate once per main loop iteration
+  if (kv_measure.sample_start_ms > 0) {
+    if (now - kv_measure.sample_start_ms < kv_measure.sample_ms) {
+      kv_measure.rpm_sum += rpm;
+      kv_measure.bv_sum += bus_voltage;
+      kv_measure.samples++;
+      return;
+    } else {
+      // finalize
+      float rpm_avg = (kv_measure.samples > 0) ? (kv_measure.rpm_sum / kv_measure.samples) : 0.0f;
+      float bv_avg = (kv_measure.samples > 0) ? (kv_measure.bv_sum / kv_measure.samples) : 0.0f;
+      // Effective motor voltage is approximate throttle fraction of measured bus voltage
+      float eff_v = bv_avg * (kv_measure.measure_throttle / 100.0f);
+      float kv = 0.0f;
+      if (eff_v > 0.1f) kv = rpm_avg / eff_v;
+      kv_measure.last_rpm_avg = rpm_avg;
+      kv_measure.last_bv_avg = bv_avg;
+      kv_measure.last_kv = kv;
+
+      // Log results to serial / debug stream so user sees outcome
+      DEBUG_printf(FST("\n# KV measurement complete: RPM_avg=%.1f, BusV_avg=%.2f V, Throttle=%.1f%%, EffV=%.2f V, KV=%.2f RPM/V\n"),
+           rpm_avg, bv_avg, kv_measure.measure_throttle, eff_v, kv);
+      DEBUG_printf(FST("# KV samples: %u over %lu ms\n"), kv_measure.samples, kv_measure.sample_ms);
+
+      // stop motor
+      motor.stop(true, 2000);
+
+      // mark inactive
+      kv_measure.active = false;
+      return;
+    }
+  }
+}
+
 void check_serial();
 void setThrottle(float throttle);
 void start_test();
@@ -69,11 +171,7 @@ void abort_test(bool thermal_abort = false);
 void print_stats(const test_data_t& data);
 void print_csv_results();
 void print_help();
-
-// ---- Command functions callable from serial AND web ----
-bool cmd_start_test();
-bool cmd_abort_test();
-void cmd_stop_motor();
+void cmd_measure_kv();
 void cmd_set_throttle(float pct);
 void cmd_tare();
 void cmd_web_throttle_timeout();
@@ -171,6 +269,9 @@ void loop() {
   // Test logic is now simpler with all acceleration/deceleration moved to the motor class
   run_test();
 
+  // KV measurement background poll
+  kv_poll();
+
   check_serial(); // Check for serial input commands
   
   poti_value = poti.read(); // Read potentiometer value
@@ -209,6 +310,7 @@ void check_serial() {
     }
   }
   else if (inByte == 'p') { print_csv_results(); } // Print CSV data on demand
+  else if (inByte == 'k') { cmd_measure_kv(); }
   else if (inByte == ' ') { // Stop the motor
         if (current_step >= 0) { abort_test(); }
         else {  setThrottle(0.0); }
@@ -423,6 +525,7 @@ void print_help() {
   Serial.println(F(" c - Calibrate motor ESC"));
   Serial.println(F(" s - Start/Stop test"));
   Serial.println(F(" p - Print CSV results"));
+  Serial.println(F(" k - Measure motor KV (RPM/V) - remove propellers before use"));
   Serial.println(F(" 0-9 - Set throttle to 10%%-100%%"));
   Serial.println(F(" a - Enable analog throttle control"));
   Serial.println(F(" w - Clear stored Wi-Fi credentials"));
@@ -488,4 +591,66 @@ void cmd_web_throttle_timeout() {
       motor.stop(true, 2000);
     }
   }
+}
+
+void cmd_measure_kv() {
+  // Start background KV measurement
+  if (!start_kv_measure(test_config.kv_throttle_percent, 2000, 5000)) {
+    DEBUG_println(FST("# KV measurement failed to start (busy)."));
+    return;
+  }
+  DEBUG_println(FST("# KV measurement started (background)."));
+}
+
+// Reusable KV measurement routine — returns true on success and fills outputs
+bool measure_kv(float measure_throttle, unsigned long spinup_ms, unsigned long sample_ms, float* out_rpm_avg, float* out_bv_avg, float* out_kv) {
+  if (current_step >= 0) return false; // busy
+
+  // Ensure throttles cleared
+  analogThrottle = false;
+  web_throttle_clear();
+
+  // Safety: require outputs
+  if (!out_rpm_avg || !out_bv_avg || !out_kv) return false;
+
+  // Smooth ramp to target throttle over 3 seconds, then wait until spinup_ms elapses
+  const unsigned long ramp_ms = 3000;
+  motor.setThrottle(measure_throttle, true, ramp_ms);
+  unsigned long startSpin = millis();
+  unsigned long spin_wait = (spinup_ms > ramp_ms) ? spinup_ms : ramp_ms;
+  while (millis() - startSpin < spin_wait) {
+    // allow background tasks to run
+    delay(50);
+  }
+
+  // Sample
+  const unsigned long sample_interval = 50;
+  unsigned long start = millis();
+  float rpm_sum = 0.0f;
+  float bv_sum = 0.0f;
+  int samples = 0;
+  while (millis() - start < sample_ms) {
+    rpm_sum += rpm;
+    bv_sum += bus_voltage;
+    samples++;
+    delay(sample_interval);
+  }
+
+  float rpm_avg = (samples > 0) ? (rpm_sum / samples) : 0.0f;
+  float bv_avg = (samples > 0) ? (bv_sum / samples) : 0.0f;
+  float eff_v = bv_avg * (measure_throttle / 100.0f);
+  float kv = 0.0f;
+  if (eff_v > 0.1f) kv = rpm_avg / eff_v;
+
+  // Log the blocking measurement result for visibility
+  DEBUG_printf(FST("# (blocking) KV measurement: RPM_avg=%.1f, BusV_avg=%.2f V, Throttle=%.1f%%, EffV=%.2f V, KV=%.2f RPM/V\n"),
+               rpm_avg, bv_avg, measure_throttle, eff_v, kv);
+
+  // Stop motor smoothly
+  motor.stop(true, 2000);
+
+  *out_rpm_avg = rpm_avg;
+  *out_bv_avg = bv_avg;
+  *out_kv = kv;
+  return true;
 }
